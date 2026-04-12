@@ -13,14 +13,25 @@ class CoupGame{
         this.winner = '';
         this.actions = constants.Actions;
         this.counterActions = constants.CounterActions;
-        this.isChallengeBlockOpen = false; // if listening for challeng or block votes
-        this.isRevealOpen = false; // if listening for what influence player will reveal
-        this.isChooseInfluenceOpen = false; // if listening for what influence to lose
-        this.isExchangeOpen = false; // if listening for result of ambassador exchange;
+        this.isChallengeBlockOpen = false;
+        this.isRevealOpen = false;
+        this.isChooseInfluenceOpen = false;
+        this.isExchangeOpen = false;
         this.votes = 0;
+        // BUG-03: deferred action after a choose-influence phase
+        this.pendingActionAfterInfluence = null;
+        // Sequential challenge → block flow
+        this.challengeTimer = null;
+        this.blockTimer = null;
+        this.blockChallengeTimer = null;
+        this.pendingBlockAction = null;
+        this.blockEligibleVoters = 0;
     }
 
     resetGame(startingPlayer = 0) {
+        clearTimeout(this.challengeTimer);
+        clearTimeout(this.blockTimer);
+        clearTimeout(this.blockChallengeTimer);
         this.currentPlayer = startingPlayer;
         this.isChallengeBlockOpen = false;
         this.isRevealOpen = false;
@@ -28,11 +39,21 @@ class CoupGame{
         this.isExchangeOpen = false;
         this.aliveCount = this.players.length;
         this.votes = 0;
+        this.pendingActionAfterInfluence = null;
+        this.challengeTimer = null;
+        this.blockTimer = null;
+        this.blockChallengeTimer = null;
+        this.pendingBlockAction = null;
+        this.blockEligibleVoters = 0;
         this.deck = gameUtils.buildDeck();
         for(let i = 0; i < this.players.length; i++) {
             this.players[i].money = 2;
             this.players[i].influences = [this.deck.pop(), this.deck.pop()];
             this.players[i].isDead = false;
+        }
+        // BUG-04: in a 2-player game the starting player gets only 1 coin
+        if(this.players.length === 2) {
+            this.players[startingPlayer].money = 1;
         }
     }
 
@@ -41,102 +62,130 @@ class CoupGame{
         this.players.map(x => {
             const socket = this.gameSocket.sockets[x.socketID];
             let bind = this
+
             socket.on('g-playAgain', () => {
                 if(bind.isPlayAgainOpen){
                     bind.isPlayAgainOpen = false;
                     this.resetGame(Math.floor(Math.random() * (this.players.length)));
                     this.updatePlayers();
-                    this.playTurn() 
+                    this.playTurn()
                 }
             })
-            socket.on('g-deductCoins', (res) => {
-                //res.amount res.source
-                console.log('deducting ' + res.amount + ' coins from ' + res.source )
-                const sourceIndex = bind.nameIndexMap[res.source];
-                bind.players[sourceIndex].money -= res.amount;
-                bind.updatePlayers();
 
-            })
+            // BUG-05: g-deductCoins removed — coin deduction now happens server-side in g-actionDecision
+
             socket.on('g-actionDecision', (res) => {
                 console.log(108, res)
                 // res.action.target, res.action.action, res.action.source
-                // console.log(bind.actions, res.action.action)
+                const sourceIndex = bind.nameIndexMap[res.action.source];
+                const player = bind.players[sourceIndex];
+
+                // BUG-06: enforce forced Coup at 10+ coins (check before deduction)
+                if(player.money >= 10 && res.action.action !== 'coup') {
+                    console.log(`Rejected: ${res.action.source} has ${player.money} coins but chose ${res.action.action}`);
+                    return;
+                }
+
+                // BUG-05: deduct coins server-side with validation
+                if(res.action.action === 'coup') {
+                    if(player.money < 7) return;
+                    player.money -= 7;
+                    bind.updatePlayers();
+                } else if(res.action.action === 'assassinate') {
+                    if(player.money < 3) return;
+                    player.money -= 3;
+                    bind.updatePlayers();
+                }
+
                 if(bind.actions[res.action.action].isChallengeable) {
-                    bind.openChallenge(res.action, (bind.actions[res.action.action].blockableBy.length > 0))
-                } else if(res.action.action == 'foreign_aid') {
-                    bind.isChallengeBlockOpen = true;
-                    bind.gameSocket.emit("g-openBlock", res.action);
+                    bind.openChallenge(res.action, bind.actions[res.action.action].blockableBy.length > 0);
+                } else if(res.action.action === 'foreign_aid') {
+                    bind.openBlockPhase(res.action);
                 } else {
                     bind.applyAction(res.action)
                 }
             })
+
             socket.on('g-challengeDecision', (res) => {
                 console.log(120, res)
-                // res.action.action, res.action.target, res.action.source, res.challengee, res.challenger, res.isChallenging
-                if(bind.isChallengeBlockOpen) {
-                    if(res.isChallenging) {
-                        bind.closeChallenge();
-                        //TODO reveal
-                        // reveal(action, counterAction, challengee, challenger, isBlock)
-                        bind.gameSocket.emit("g-addLog", `${res.challenger} challenged ${res.challengee}`)
-                        bind.reveal(res.action, null, res.challengee, res.challenger, false);
-                    } else if(bind.votes+1 == bind.aliveCount-1) {
-                        //then it is a pass
-                        bind.closeChallenge();
-                        bind.applyAction(res.action);
+                // res.action, res.challengee, res.challenger, res.isChallenging
+                if(!bind.isChallengeBlockOpen) return;
+
+                if(res.isChallenging) {
+                    clearTimeout(bind.challengeTimer);
+                    bind.challengeTimer = null;
+                    bind.closeChallenge();
+                    bind.gameSocket.emit("g-addLog", `${res.challenger} challenged ${res.challengee}`)
+                    bind.reveal(res.action, null, res.challengee, res.challenger, false);
+                } else if(bind.votes + 1 >= bind.aliveCount - 1) {
+                    clearTimeout(bind.challengeTimer);
+                    bind.challengeTimer = null;
+                    const action = bind.pendingBlockAction;
+                    const isBlockable = bind.actions[action.action].blockableBy.length > 0;
+                    bind.closeChallenge();
+                    if(isBlockable) {
+                        bind.openBlockPhase(action);
                     } else {
-                        bind.votes += 1;
+                        bind.applyAction(action);
                     }
+                } else {
+                    bind.votes += 1;
                 }
             });
+
             socket.on('g-blockChallengeDecision', (res) => {
                 console.log(137, res)
                 // res.counterAction, res.prevAction, res.challengee, res.challenger, res.isChallenging
-                if(bind.isChallengeBlockOpen) {
-                    if(res.isChallenging) {
-                        bind.closeChallenge();
-                        bind.gameSocket.emit("g-addLog", `${res.challenger} challenged ${res.challengee}'s block`)
-                        bind.reveal(res.prevAction, res.counterAction, res.challengee, res.challenger, true);
-                    } else if(bind.votes+1 == bind.aliveCount-1) {
-                        //then it is a pass
-                        bind.closeChallenge();
-                        bind.nextTurn();
-                    } else {
-                        bind.votes += 1;
-                    }
+                if(!bind.isChallengeBlockOpen) return;
+
+                if(res.isChallenging) {
+                    clearTimeout(bind.blockChallengeTimer);
+                    bind.blockChallengeTimer = null;
+                    bind.closeChallenge();
+                    bind.gameSocket.emit("g-addLog", `${res.challenger} challenged ${res.challengee}'s block`)
+                    bind.reveal(res.prevAction, res.counterAction, res.challengee, res.challenger, true);
+                } else if(bind.votes + 1 >= bind.aliveCount - 1) {
+                    clearTimeout(bind.blockChallengeTimer);
+                    bind.blockChallengeTimer = null;
+                    bind.closeChallenge();
+                    bind.nextTurn();
+                } else {
+                    bind.votes += 1;
                 }
             });
+
             socket.on('g-blockDecision', (res) => {
                 console.log(154, res)
-                // res.prevAction.action, res.prevAction.target, res.prevAction.source, res.counterAction, res.blockee, res.blocker, res.isBlocking
-                if(bind.isChallengeBlockOpen) {
-                    if(res.isBlocking) {
-                        bind.closeChallenge();
-                        bind.gameSocket.emit("g-addLog", `${res.blocker} blocked ${res.blockee}`)
-                        bind.openBlockChallenge(res.counterAction, res.blockee, res.prevAction);
-                    } else if(bind.votes+1 == bind.aliveCount-1) {
-                        //then it is a pass
-                        bind.closeChallenge();
-                        bind.applyAction(res.action);
-                    } else {
-                        bind.votes += 1;
-                    }
+                // res.prevAction, res.counterAction, res.blockee, res.blocker, res.isBlocking
+                if(!bind.isChallengeBlockOpen) return;
+
+                if(res.isBlocking) {
+                    clearTimeout(bind.blockTimer);
+                    bind.blockTimer = null;
+                    bind.closeChallenge();
+                    bind.gameSocket.emit("g-addLog", `${res.blocker} blocked ${res.blockee}`)
+                    bind.openBlockChallenge(res.counterAction, res.blockee, res.prevAction);
+                } else if(bind.votes + 1 >= bind.blockEligibleVoters) {
+                    clearTimeout(bind.blockTimer);
+                    bind.blockTimer = null;
+                    bind.closeChallenge();
+                    bind.applyAction(bind.pendingBlockAction);
+                } else {
+                    bind.votes += 1;
                 }
             });
+
             socket.on('g-revealDecision', (res) => {
                 console.log(171, res)
-                console.log(res.isBlock)
-                //if isBlock, prevaction should contain the prev action
-                //if isBlock is false, prevaction is action
-                // res.revealedCard, prevaction, counterAction, challengee, challenger, isBlock
+                // res.revealedCard, prevAction, counterAction, challengee, challenger, isBlock
                 const challengeeIndex = bind.nameIndexMap[res.challengee];
                 const challengerIndex = bind.nameIndexMap[res.challenger];
                 if(bind.isRevealOpen) {
                     bind.isRevealOpen = false;
-                    if(res.isBlock) { //block challenge (for example, a captain blocking a steal or a contessa blocking an assasinate)
-                        if(res.revealedCard == res.counterAction.claim || (res.counterAction.counterAction == 'block_steal' && (res.revealedCard == 'ambassador' || res.revealedCard =='captain'))) { //challenge failed
+                    if(res.isBlock) { // block challenge
+                        if(res.revealedCard == res.counterAction.claim || (res.counterAction.counterAction == 'block_steal' && (res.revealedCard == 'ambassador' || res.revealedCard =='captain'))) { // challenge failed — block stands
                             bind.gameSocket.emit("g-addLog", `${res.challenger}'s challenge on ${res.challengee}'s block failed`)
-                            for(let i = 0; i < bind.players[challengeeIndex].influences.length; i++) { //revealed card needs to be replaced
+                            for(let i = 0; i < bind.players[challengeeIndex].influences.length; i++) {
                                 if(bind.players[challengeeIndex].influences[i] == res.revealedCard) {
                                     bind.deck.push(bind.players[challengeeIndex].influences[i]);
                                     bind.deck = gameUtils.shuffleArray(bind.deck);
@@ -149,7 +198,7 @@ class CoupGame{
                             bind.isChooseInfluenceOpen = true;
                             bind.gameSocket.to(bind.nameSocketMap[res.challenger]).emit('g-chooseInfluence');
                             bind.nextTurn();
-                        } else { //challenge succeeded
+                        } else { // challenge succeeded — block fails, original action applies
                             bind.gameSocket.emit("g-addLog", `${res.challenger}'s challenge on ${res.challengee}'s block succeeded`)
                             bind.gameSocket.emit("g-addLog", `${res.challengee} lost their ${res.revealedCard}`)
                             for(let i = 0; i < bind.players[challengeeIndex].influences.length; i++) {
@@ -160,14 +209,12 @@ class CoupGame{
                                     break;
                                 }
                             }
-                            console.log(res.prevAction)
                             bind.applyAction(res.prevAction);
                         }
-                    } else { //normal challenge
-                        if(res.revealedCard == bind.actions[res.prevAction.action].influence) { // challenge failed
-                            console.log("CHALLENGE: " + res.revealedCard + " " + bind.actions[res.prevAction.action].influence);
+                    } else { // normal challenge
+                        if(res.revealedCard == bind.actions[res.prevAction.action].influence) { // challenge failed — action stands
                             bind.gameSocket.emit("g-addLog", `${res.challenger}'s challenge on ${res.challengee} failed`)
-                            for(let i = 0; i < bind.players[challengeeIndex].influences.length; i++) { //revealed card needs to be replaced
+                            for(let i = 0; i < bind.players[challengeeIndex].influences.length; i++) {
                                 if(bind.players[challengeeIndex].influences[i] == res.revealedCard) {
                                     bind.deck.push(bind.players[challengeeIndex].influences[i]);
                                     bind.deck = gameUtils.shuffleArray(bind.deck);
@@ -176,21 +223,16 @@ class CoupGame{
                                     break;
                                 }
                             }
-
-                            if (res.revealedCard == 'assassin' && res.prevAction.target == res.challenger 
-                                && bind.players[challengerIndex].influences.length == 2) {
-                                bind.deck.push(bind.players[challengeeIndex].influences[0]);
-                                bind.deck = gameUtils.shuffleArray(bind.deck);
-                                bind.players[challengerIndex].influences.splice(0, 1);
-                            }
+                            // BUG-03: defer the action so challenger first chooses their influence loss,
+                            // THEN the action executes (handles both double-loss and normal cases)
+                            bind.pendingActionAfterInfluence = res.prevAction;
                             bind.updatePlayers();
                             bind.isChooseInfluenceOpen = true;
                             bind.gameSocket.to(bind.nameSocketMap[res.challenger]).emit('g-chooseInfluence');
-                            bind.applyAction(res.prevAction);
-                        } else { // challenge succeeded
+                        } else { // challenge succeeded — action fails
                             bind.gameSocket.emit("g-addLog", `${res.challenger}'s challenge on ${res.challengee} succeeded`)
                             bind.gameSocket.emit("g-addLog", `${res.challengee} lost their ${res.revealedCard}`)
-                            for(let i = 0; i < bind.players[challengeeIndex].influences.length; i++) { // 
+                            for(let i = 0; i < bind.players[challengeeIndex].influences.length; i++) {
                                 if(bind.players[challengeeIndex].influences[i] == res.revealedCard) {
                                     bind.deck.push(bind.players[challengeeIndex].influences[i]);
                                     bind.deck = gameUtils.shuffleArray(bind.deck);
@@ -198,11 +240,16 @@ class CoupGame{
                                     break;
                                 }
                             }
+                            // BUG-02: return coins paid for assassination if the challenge succeeded
+                            if(res.prevAction.action === 'assassinate') {
+                                bind.players[challengeeIndex].money += 3;
+                            }
                             bind.nextTurn();
                         }
                     }
                 }
             });
+
             socket.on('g-chooseInfluenceDecision', (res) => {
                 console.log(211, res)
                 // res.influence, res.playerName
@@ -218,9 +265,19 @@ class CoupGame{
                         }
                     }
                     bind.isChooseInfluenceOpen = false;
-                    bind.nextTurn();
+
+                    // BUG-03: if there's a pending action (e.g. assassination after a failed challenge),
+                    // apply it now instead of ending the turn
+                    if(bind.pendingActionAfterInfluence) {
+                        const pendingAction = bind.pendingActionAfterInfluence;
+                        bind.pendingActionAfterInfluence = null;
+                        bind.applyAction(pendingAction);
+                    } else {
+                        bind.nextTurn();
+                    }
                 }
             })
+
             socket.on('g-chooseExchangeDecision', (res) => {
                 console.log(228, res)
                 // res.playerName, res.kept, res.putBack = ["influence","influence"]
@@ -237,13 +294,11 @@ class CoupGame{
         })
     }
 
-    updatePlayers() {// when players die
+    updatePlayers() {
         this.gameSocket.emit('g-updatePlayers', gameUtils.exportPlayers(JSON.parse(JSON.stringify(this.players))));
     }
 
     reveal(action, counterAction, challengee, challenger, isBlock) {
-        //if isBlock, action should contain the prev action
-        //if isBlock is false, counterAction is null and action is the action being challenged
         const res = {
             action: action,
             counterAction: counterAction,
@@ -252,13 +307,17 @@ class CoupGame{
             isBlock: isBlock
         }
         console.log(258, res)
-        console.log(this.nameSocketMap)
-        console.log(challengee)
         this.isRevealOpen = true;
         this.gameSocket.to(this.nameSocketMap[res.challengee]).emit("g-chooseReveal", res);
     }
 
     closeChallenge() {
+        clearTimeout(this.challengeTimer);
+        clearTimeout(this.blockTimer);
+        clearTimeout(this.blockChallengeTimer);
+        this.challengeTimer = null;
+        this.blockTimer = null;
+        this.blockChallengeTimer = null;
         this.isChallengeBlockOpen = false;
         this.votes = 0;
         this.gameSocket.emit("g-closeChallenge");
@@ -266,30 +325,66 @@ class CoupGame{
         this.gameSocket.emit("g-closeBlockChallenge");
     }
 
+    // Phase 1: challenge window (challengeable actions only)
     openChallenge(action, isBlockable) {
-        console.log(264, action)
         this.isChallengeBlockOpen = true;
-        if(isBlockable && action.target != null) {
-            let targetIndex = 0;
-            for(let i = 0; i < this.players.length; i++) {
-                if(this.players[i].name == action.target) {
-                    targetIndex = i;
-                    break;
+        this.pendingBlockAction = action;
+        this.gameSocket.emit("g-openChallenge", { action, timeLimit: constants.Timeouts.CHALLENGE });
+
+        const bind = this;
+        this.challengeTimer = setTimeout(() => {
+            if(bind.isChallengeBlockOpen) {
+                bind.closeChallenge();
+                if(isBlockable) {
+                    bind.openBlockPhase(action);
+                } else {
+                    bind.applyAction(action);
                 }
             }
-            console.log(this.players[targetIndex].socketID)
-            this.gameSocket.to(this.players[targetIndex].socketID).emit("g-openBlock", action);
-        }
-        this.gameSocket.emit("g-openChallenge", action);
+        }, constants.Timeouts.CHALLENGE);
     }
 
-    openBlockChallenge(counterAction, blockee, prevAction) {
-        //blockClaim is the character that the blockee claims to be blocking with
+    // Phase 2: block window (after challenge phase, or directly for foreign_aid)
+    openBlockPhase(action) {
         this.isChallengeBlockOpen = true;
+        this.votes = 0;
+        this.pendingBlockAction = action;
+
+        if(action.action === 'foreign_aid') {
+            this.blockEligibleVoters = this.aliveCount - 1;
+            this.gameSocket.emit("g-openBlock", { action, timeLimit: constants.Timeouts.BLOCK });
+        } else {
+            // Only the target can block (steal / assassinate)
+            this.blockEligibleVoters = 1;
+            this.gameSocket.to(this.nameSocketMap[action.target]).emit("g-openBlock", { action, timeLimit: constants.Timeouts.BLOCK });
+        }
+
+        const bind = this;
+        this.blockTimer = setTimeout(() => {
+            if(bind.isChallengeBlockOpen) {
+                bind.closeChallenge();
+                bind.applyAction(action);
+            }
+        }, constants.Timeouts.BLOCK);
+    }
+
+    // Phase 3: challenge the block
+    openBlockChallenge(counterAction, blockee, prevAction) {
+        this.isChallengeBlockOpen = true;
+        this.votes = 0;
         this.gameSocket.emit("g-openBlockChallenge", {
-            counterAction: counterAction,
-            prevAction: prevAction
+            counterAction,
+            prevAction,
+            timeLimit: constants.Timeouts.BLOCK_CHALLENGE
         });
+
+        const bind = this;
+        this.blockChallengeTimer = setTimeout(() => {
+            if(bind.isChallengeBlockOpen) {
+                bind.closeChallenge();
+                bind.nextTurn(); // block succeeds, action fails
+            }
+        }, constants.Timeouts.BLOCK_CHALLENGE);
     }
 
     applyAction(action) {
@@ -304,6 +399,7 @@ class CoupGame{
         const execute = action.action;
         const target = action.target;
         const source = action.source;
+
         if(execute == 'income') {
             for(let i = 0; i < this.players.length; i++) {
                 if(this.players[i].name == source) {
@@ -328,7 +424,7 @@ class CoupGame{
                     break;
                 }
             }
-            // no nextTurn() because it is called in "on chooseInfleunceDecision"
+            // no nextTurn() — called from g-chooseInfluenceDecision
         }else if(execute == 'tax') {
             for(let i = 0; i < this.players.length; i++) {
                 if(this.players[i].name == source) {
@@ -340,21 +436,25 @@ class CoupGame{
         }else if(execute == 'assassinate') {
             for(let i = 0; i < this.players.length; i++) {
                 if(this.players[i].name == target) {
-                    this.isChooseInfluenceOpen = true;
-                    this.gameSocket.to(this.nameSocketMap[target]).emit('g-chooseInfluence');
+                    // BUG-03: guard — target may already be dead (lost last influence on challenge)
+                    if(this.players[i].influences.length > 0) {
+                        this.isChooseInfluenceOpen = true;
+                        this.gameSocket.to(this.nameSocketMap[target]).emit('g-chooseInfluence');
+                    } else {
+                        this.nextTurn();
+                    }
                     break;
                 }
             }
-            // no nextTurn() because it is called in "on chooseInfleunceDecision"
+            // no nextTurn() — called from g-chooseInfluenceDecision (or above when already dead)
         }else if(execute == 'exchange') {
             const drawTwo = [this.deck.pop(), this.deck.pop()]
             this.isExchangeOpen = true;
             this.gameSocket.to(this.nameSocketMap[source]).emit('g-openExchange', drawTwo);
-             // no nextTurn() because it is called in "on chooseExchangeDecision"
+            // no nextTurn() — called from g-chooseExchangeDecision
         }else if(execute == 'steal') {
             let stolen = 0;
             for(let i = 0; i < this.players.length; i++) {
-                console.log(348, this.players[i].name, target)
                 if(this.players[i].name == target) {
                     if(this.players[i].money >= 2) {
                         this.players[i].money-=2;
@@ -362,8 +462,6 @@ class CoupGame{
                     }else if(this.players[i].money == 1) {
                         this.players[i].money-=1;
                         stolen = 1;
-                    }else{//no money stolen
-
                     }
                     break;
                 }
@@ -378,50 +476,41 @@ class CoupGame{
         }else {
             console.log('ERROR ACTION NOT FOUND');
         }
-        
     }
 
     nextTurn() {
-        console.log(!this.isChallengeBlockOpen, !this.isChooseInfluenceOpen, !this.isExchangeOpen, !this.isRevealOpen)
         if(!this.isChallengeBlockOpen && !this.isChooseInfluenceOpen && !this.isExchangeOpen && !this.isRevealOpen){
-        this.players.forEach(x => {
-            console.log(x.influences)
-            if(x.influences.length == 0 && !x.isDead) {// player is dead
-                this.gameSocket.emit("g-addLog", `${x.name} is out!`)
-                this.aliveCount-=1;
-                x.isDead = true;
-                x.money = 0;
-            }
-        });
-        this.updatePlayers();
-        if(this.aliveCount == 1) {
-            let winner = null
-            for(let i = 0; i < this.players.length; i++) {
-                if(this.players[i].influences.length > 0) {
-                    winner = this.players[i].name; 
+            this.players.forEach(x => {
+                if(x.influences.length == 0 && !x.isDead) {
+                    this.gameSocket.emit("g-addLog", `${x.name} is out!`)
+                    this.aliveCount-=1;
+                    x.isDead = true;
+                    x.money = 0;
                 }
+            });
+            this.updatePlayers();
+            if(this.aliveCount == 1) {
+                let winner = null
+                for(let i = 0; i < this.players.length; i++) {
+                    if(this.players[i].influences.length > 0) {
+                        winner = this.players[i].name;
+                    }
+                }
+                this.isPlayAgainOpen = true;
+                this.gameSocket.emit('g-gameOver', winner);
+            } else {
+                do {
+                    this.currentPlayer+=1;
+                    this.currentPlayer%=this.players.length;
+                } while(this.players[this.currentPlayer].isDead == true);
+                this.playTurn();
             }
-            this.isPlayAgainOpen = true;
-            this.gameSocket.emit('g-gameOver', winner);
-            //GAME END
-        } else {
-            do {
-                this.currentPlayer+=1;
-                this.currentPlayer%=this.players.length;
-            } while(this.players[this.currentPlayer].isDead == true);
-            this.playTurn();
         }
-      }
     }
 
     playTurn() {
         this.gameSocket.emit("g-updateCurrentPlayer", this.players[this.currentPlayer].name);
-        console.log(this.players[this.currentPlayer].socketID)
         this.gameSocket.to(this.players[this.currentPlayer].socketID).emit('g-chooseAction');
-    }
-
-    onChooseAction(action) {
-        console.log('action', action)
     }
 
     start() {
@@ -430,9 +519,8 @@ class CoupGame{
         this.updatePlayers();
         console.log('Game has started');
         this.playTurn()
-        //deal cards to each player
     }
-    
+
 }
 
 module.exports = CoupGame;

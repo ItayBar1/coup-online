@@ -48,7 +48,7 @@ const Actions = {
     },
     steal: {
         influence: CardNames.CAPTAIN,
-        blockableBy: [CardNames.AMBASSADOR, CardNames.AMBASSADOR],
+        blockableBy: [CardNames.AMBASSADOR, CardNames.CAPTAIN],
         isChallengeable: true,
         moneyDelta: 2 // EDGE CASE: if victim only has 1 or 0 coins
     }
@@ -66,8 +66,15 @@ const CounterActions = {
     },
 };
 
+const Timeouts = {
+    CHALLENGE: 5000,       // ms for challenge window
+    BLOCK: 5000,           // ms for block window
+    BLOCK_CHALLENGE: 5000, // ms for block-challenge window
+};
+
 module.exports = {
     CardNames: CardNames,
     Actions: Actions,
     CounterActions: CounterActions,
+    Timeouts: Timeouts,
 }

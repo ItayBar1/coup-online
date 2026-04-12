@@ -17,7 +17,9 @@ export default class Coup extends Component {
 
     constructor(props) {
         super(props)
-    
+
+        this.countdownInterval = null;
+
         this.state = {
              action: null,
              blockChallengeRes: null,
@@ -35,7 +37,8 @@ export default class Coup extends Component {
              logs: [],
              isDead: false,
              waiting: true,
-             disconnected: false
+             disconnected: false,
+             secondsLeft: null,
         }
         const bind = this;
 
@@ -73,7 +76,6 @@ export default class Coup extends Component {
             }
             console.log(playerIndex)
             bind.setState({playerIndex, players});
-            
         });
         this.props.socket.on('g-updateCurrentPlayer', (currentPlayer) => {
             console.log('currentPlayer: ', currentPlayer)
@@ -97,43 +99,43 @@ export default class Coup extends Component {
             bind.state.logs = [...bind.state.logs, coloredLog]
             bind.setState({logs :bind.state.logs})
         })
-        this.props.socket.on('g-chooseAction', () => {        
+        this.props.socket.on('g-chooseAction', () => {
             bind.setState({ isChooseAction: true})
         });
         this.props.socket.on('g-openExchange', (drawTwo) => {
             let influences = [...bind.state.players[bind.state.playerIndex].influences, ...drawTwo];
             bind.setState({ exchangeInfluence: influences });
         })
-        this.props.socket.on('g-openChallenge', (action) => {
-            if(this.state.isDead) {
-                return
-            }
+
+        // Sequential challenge phase — server sends { action, timeLimit }
+        this.props.socket.on('g-openChallenge', ({ action, timeLimit }) => {
+            if(this.state.isDead) return;
             if(action.source !== bind.props.name) {
-               bind.setState({ action }) 
-            } else {
-                bind.setState({ action: null }) 
+                bind.setState({ action });
+                bind.startCountdown(timeLimit);
             }
         });
-        this.props.socket.on('g-openBlockChallenge', (blockChallengeRes) => {
-            if(this.state.isDead) {
-                return
-            }
-            if(blockChallengeRes.counterAction.source !== bind.props.name) {
-               bind.setState({ blockChallengeRes }) 
-            } else {
-                bind.setState({ blockChallengeRes: null }) 
+
+        // Block challenge phase — server sends { counterAction, prevAction, timeLimit }
+        this.props.socket.on('g-openBlockChallenge', ({ counterAction, prevAction, timeLimit }) => {
+            if(this.state.isDead) return;
+            if(counterAction.source !== bind.props.name) {
+                bind.setState({ blockChallengeRes: { counterAction, prevAction } });
+                bind.startCountdown(timeLimit);
             }
         });
-        this.props.socket.on('g-openBlock', (action) => {
-            if(this.state.isDead) {
-                return
-            }
+
+        // Block phase — server sends { action, timeLimit }
+        // For steal/assassinate: only the target receives this event.
+        // For foreign_aid: all players except source receive it.
+        this.props.socket.on('g-openBlock', ({ action, timeLimit }) => {
+            if(this.state.isDead) return;
             if(action.source !== bind.props.name) {
-                bind.setState({ blockingAction: action })
-             } else {
-                 bind.setState({ blockingAction: null }) 
-             }
+                bind.setState({ blockingAction: action });
+                bind.startCountdown(timeLimit);
+            }
         });
+
         this.props.socket.on('g-chooseReveal', (res) => {
             console.log(res)
             bind.setState({ revealingRes: res});
@@ -143,54 +145,80 @@ export default class Coup extends Component {
         });
         this.props.socket.on('g-closeChallenge', () => {
             bind.setState({ action: null });
+            bind.stopCountdown();
         });
         this.props.socket.on('g-closeBlock', () => {
             bind.setState({ blockingAction: null });
+            bind.stopCountdown();
         });
         this.props.socket.on('g-closeBlockChallenge', () => {
             bind.setState({ blockChallengeRes: null });
+            bind.stopCountdown();
         });
     }
 
-    deductCoins = (amount) => {
-        let res = {
-            source: this.props.name,
-            amount: amount
-        }
-        this.props.socket.emit('g-deductCoins', res);
+    componentWillUnmount() {
+        clearInterval(this.countdownInterval);
+    }
+
+    startCountdown = (timeLimit) => {
+        clearInterval(this.countdownInterval);
+        const endTime = Date.now() + timeLimit;
+        this.setState({ secondsLeft: Math.ceil(timeLimit / 1000) });
+        this.countdownInterval = setInterval(() => {
+            const remaining = Math.ceil((endTime - Date.now()) / 1000);
+            if(remaining <= 0) {
+                clearInterval(this.countdownInterval);
+                this.setState({ secondsLeft: 0 });
+            } else {
+                this.setState({ secondsLeft: remaining });
+            }
+        }, 500);
+    }
+
+    stopCountdown = () => {
+        clearInterval(this.countdownInterval);
+        this.countdownInterval = null;
+        this.setState({ secondsLeft: null });
     }
 
     doneAction = () => {
-        this.setState({ 
-            isChooseAction: false
-        })
+        this.setState({ isChooseAction: false })
     }
+
     doneChallengeBlockingVote = () => {
-        this.setState({ action: null }); //challemge
-        this.setState({ blockChallengeRes: null}); //challenge a block
-        this.setState({ blockingAction: null }); //block
+        this.setState({ action: null });
+        this.setState({ blockChallengeRes: null });
+        this.setState({ blockingAction: null });
+        this.stopCountdown();
     }
+
     closeOtherVotes = (voteType) => {
         if(voteType === 'challenge') {
-            this.setState({ blockChallengeRes: null}); //challenge a block
-            this.setState({ blockingAction: null }); //block
+            this.setState({ blockChallengeRes: null });
+            this.setState({ blockingAction: null });
         }else if(voteType === 'block') {
-            this.setState({ action: null }); //challemge
-            this.setState({ blockChallengeRes: null}); //challenge a block
+            this.setState({ action: null });
+            this.setState({ blockChallengeRes: null });
         }else if(voteType === 'challenge-block') {
-            this.setState({ action: null }); //challemge
-            this.setState({ blockingAction: null }); //block
+            this.setState({ action: null });
+            this.setState({ blockingAction: null });
         }
+        this.stopCountdown();
     }
+
     doneReveal = () => {
         this.setState({ revealingRes: null });
     }
+
     doneChooseInfluence = () => {
         this.setState({ isChoosingInfluence: false })
     }
+
     doneExchangeInfluence = () => {
         this.setState({ exchangeInfluence: null })
     }
+
     pass = () => {
         if(this.state.action != null) { //challengeDecision
             let res = {
@@ -223,7 +251,7 @@ export default class Coup extends Component {
         contessa: '#E35646',
         ambassador: '#B4CA1F'
     }
-    
+
     render() {
         let actionDecision = null
         let currentPlayer = null
@@ -237,11 +265,13 @@ export default class Coup extends Component {
         let coins = null
         let exchangeInfluences = null
         let playAgain = null
+        let countdown = null
         let isWaiting = true
         let waiting = null
+
         if(this.state.isChooseAction && this.state.playerIndex != null) {
             isWaiting = false;
-            actionDecision = <ActionDecision doneAction={this.doneAction} deductCoins={this.deductCoins} name={this.props.name} socket={this.props.socket} money={this.state.players[this.state.playerIndex].money} players={this.state.players}></ActionDecision>
+            actionDecision = <ActionDecision doneAction={this.doneAction} name={this.props.name} socket={this.props.socket} money={this.state.players[this.state.playerIndex].money} players={this.state.players}></ActionDecision>
         }
         if(this.state.currentPlayer) {
             currentPlayer = <p>It is <b>{this.state.currentPlayer}</b>'s turn</p>
@@ -285,11 +315,13 @@ export default class Coup extends Component {
                     })
                 }
             </>
-            
             coins = <p>Coins: {this.state.players[this.state.playerIndex].money}</p>
         }
         if(isWaiting && !this.state.isDead) {
             waiting = <p>Waiting for other players...</p>
+        }
+        if(this.state.secondsLeft !== null && !this.state.isDead) {
+            countdown = <p><b>{this.state.secondsLeft}s</b> to decide</p>
         }
         if(this.state.disconnected) {
             return (
@@ -328,6 +360,7 @@ export default class Coup extends Component {
                 <PlayerBoard players={this.state.players}></PlayerBoard>
                 <div className="DecisionsSection">
                     {waiting}
+                    {countdown}
                     {revealDecision}
                     {chooseInfluenceDecision}
                     {actionDecision}
