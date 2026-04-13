@@ -1,15 +1,17 @@
 import React, { Component } from 'react'
+import { Link } from 'react-router-dom';
 import io from "socket.io-client";
 import Coup from './game/Coup';
+import LandingBackground from './shared/LandingBackground';
 
-const axios = require('axios');
-const baseUrl = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000' 
+import axios from 'axios';
+const baseUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000'
 
 export default class JoinGame extends Component {
 
     constructor(props) {
         super(props)
-    
+
         this.state = {
             name: '',
             roomCode: '',
@@ -38,16 +40,15 @@ export default class JoinGame extends Component {
         this.setState({ socket });
         console.log("socket created")
         socket.emit('setName', this.state.name);
-        
+
         socket.on("joinSuccess", function() {
             console.log("join successful")
-            // bind.setState({ isLoading: false });
-            bind.setState({ isInRoom: true })
+            bind.setState({ isInRoom: true, isLoading: false })
         })
 
         socket.on("joinFailed", function(err) {
             console.log("join failed, cause: " + err);
-            bind.setState({ 
+            bind.setState({
                 errorMsg: err,
                 isError: true,
                 isLoading: false
@@ -62,13 +63,12 @@ export default class JoinGame extends Component {
         socket.on('partyUpdate', (players) => {
             console.log(players)
             this.setState({ players })
-            if(players.length >= 3 && players.map(x => x.isReady).filter(x => x === true).length === players.length) { //TODO CHANGE 2 BACK TO 3
+            if(players.length >= 3 && players.map(x => x.isReady).filter(x => x === true).length === players.length) {
                 this.setState({ canStart: true })
             } else {
                 this.setState({ canStart: false })
             }
         })
-
 
         socket.on('disconnected', function() {
             console.log("You've lost connection with the server")
@@ -76,23 +76,12 @@ export default class JoinGame extends Component {
     }
 
     attemptJoinParty = () => {
-
         if(this.state.name === '') {
-            //TODO  handle error
-            console.log('Please enter a name');
-            this.setState({ 
-                errorMsg: 'Please enter a name',
-                isError: true 
-            });
+            this.setState({ errorMsg: 'Please enter a name', isError: true });
             return
         }
         if(this.state.roomCode === '') {
-            //TODO  handle error
-            console.log('Please enter a room code');
-            this.setState({ 
-                errorMsg: 'Please enter a room code',
-                isError: true
-            });
+            this.setState({ errorMsg: 'Please enter a room code', isError: true });
             return
         }
 
@@ -100,16 +89,11 @@ export default class JoinGame extends Component {
         const bind = this
         axios.get(`${baseUrl}/exists/${this.state.roomCode}`)
             .then(function (res) {
-                console.log(res)
                 if(res.data.exists) {
-                    //join 
-                    console.log("joining")
                     bind.setState({errorMsg: ''})
                     bind.joinParty();
                 } else {
-                    //TODO  handle error
-                    console.log('Invalid Party Code')
-                    bind.setState({ 
+                    bind.setState({
                         isLoading: false,
                         errorMsg: 'Invalid Party Code',
                         isError: true
@@ -117,16 +101,15 @@ export default class JoinGame extends Component {
                 }
             })
             .catch(function (err) {
-                //TODO  handle error
                 console.log("error in getting exists", err);
-                bind.setState({ 
+                bind.setState({
                     isLoading: false,
                     errorMsg: 'Server error',
                     isError: true
                 });
             })
     }
-    
+
     reportReady = () => {
         this.state.socket.emit('setReady', true);
         this.state.socket.on('readyConfirm', () => {
@@ -136,72 +119,131 @@ export default class JoinGame extends Component {
 
     render() {
         if(this.state.isGameStarted) {
-            return (<Coup name={this.state.name} socket={this.state.socket}></Coup>);
-        }
-        let error = null;
-        let joinReady = null;
-        let ready = null;
-        if(this.state.isError) {
-            error = <b>{this.state.errorMsg}</b>
-        }
-        if(this.state.isInRoom) {
-            joinReady = <button className="joinButton" onClick={this.reportReady} disabled={this.state.isReady}>Ready</button>
-        } else {
-            joinReady = <button className="joinButton" onClick={this.attemptJoinParty} disabled={this.state.isLoading}>{this.state.isLoading ? 'Joining...': 'Join'}</button>
-        }
-        if(this.state.isReady) {
-            ready = <b style={{ color: '#5FC15F' }}>You are ready!</b>
-            joinReady = null
+            return (<Coup name={this.state.name} socket={this.state.socket} />);
         }
 
         return (
-            <div className="joinGameContainer">
-                <p>Your Name</p>
-                <input
-                    type="text" value={this.state.name} disabled={this.state.isLoading}
-                    onChange={e => {
-                        if(e.target.value.length <= 8){
-                            this.setState({
-                                errorMsg: '',
-                                isError: false
-                            })
-                            this.onNameChange(e.target.value);
-                        } else {
-                            this.setState({
-                                errorMsg: 'Name must be less than 9 characters',
-                                isError: true
-                            })
-                        }
-                    }}
-                />
-                <p>Room Code</p>
-                <input
-                    type="text" value={this.state.roomCode} disabled={this.state.isLoading}
-                    onChange={e => this.onCodeChange(e.target.value)}
-                />
-                <br></br>
-                {joinReady}
-                <br></br>
-                {ready}
-                <br></br>
-                {error}
-                <div className="readyUnitContainer">
-                        {this.state.players.map((item,index) => {
-                            let ready = null
-                            let readyUnitColor = '#E46258'
-                            if(item.isReady) {
-                                ready = <b>Ready!</b>
-                                readyUnitColor = '#73C373'
-                            } else {
-                                ready = <b>Not Ready</b>
-                            }
-                            return (
-                                    <div className="readyUnit" style={{backgroundColor: readyUnitColor}} key={index}>
-                                        <p >{index+1}. {item.name} {ready}</p>
-                                    </div>
-                            )
-                            })
-                        }
+            <div className="dark min-h-screen bg-surface flex flex-col overflow-hidden">
+                <LandingBackground dimmed={true} />
+
+                {/* Header */}
+                <header className="bg-[#1a1208]/90 backdrop-blur-xl border-b border-[#a88a86]/10 fixed top-0 w-full z-50 flex justify-between items-center px-8 py-4">
+                    <div className="text-xl font-bold tracking-[0.2em] text-[#f5edd8] font-headline uppercase">
+                        THE SOVEREIGN LEDGER
+                    </div>
+                    <Link to="/" className="font-label text-xs tracking-widest text-outline hover:text-primary transition-colors uppercase">
+                        ← TERMINAL
+                    </Link>
+                </header>
+
+                {/* Modal Panel */}
+                <div className="relative z-40 flex-grow flex items-center justify-center pt-24 pb-8 px-4">
+                    <div className="w-full max-w-md bg-surface-container/80 backdrop-blur-xl border border-outline-variant p-8 space-y-6">
+
+                        {/* Title */}
+                        <div className="flex items-center gap-3">
+                            <div className="h-[1px] flex-grow bg-outline-variant/50"></div>
+                            <span className="font-label text-[10px] tracking-[0.4em] uppercase text-outline">ACCESS TERMINAL</span>
+                            <div className="h-[1px] flex-grow bg-outline-variant/50"></div>
+                        </div>
+
+                        {/* Name Input */}
+                        <div>
+                            <label className="font-label text-[10px] tracking-widest uppercase text-outline block mb-2">
+                                OPERATOR DESIGNATION
+                            </label>
+                            <input
+                                type="text"
+                                value={this.state.name}
+                                disabled={this.state.isLoading}
+                                placeholder="Enter name..."
+                                className="w-full bg-surface border border-outline-variant text-on-surface font-label text-sm px-4 py-3 focus:border-primary focus:outline-none transition-colors disabled:opacity-50"
+                                onChange={e => {
+                                    if(e.target.value.length <= 8){
+                                        this.setState({ errorMsg: '', isError: false })
+                                        this.onNameChange(e.target.value);
+                                    } else {
+                                        this.setState({ errorMsg: 'Name must be less than 9 characters', isError: true })
+                                    }
+                                }}
+                            />
+                        </div>
+
+                        {/* Room Code Input */}
+                        <div>
+                            <label className="font-label text-[10px] tracking-widest uppercase text-outline block mb-2">
+                                ACCESS CODE
+                            </label>
+                            <input
+                                type="text"
+                                value={this.state.roomCode}
+                                disabled={this.state.isLoading || this.state.isInRoom}
+                                placeholder="Enter 6-digit code..."
+                                className="w-full bg-surface border border-outline-variant text-on-surface font-label text-sm px-4 py-3 focus:border-primary focus:outline-none transition-colors uppercase tracking-widest disabled:opacity-50"
+                                onChange={e => this.onCodeChange(e.target.value)}
+                            />
+                        </div>
+
+                        {/* Error */}
+                        {this.state.isError && (
+                            <p className="font-label text-xs text-error tracking-widest">{this.state.errorMsg}</p>
+                        )}
+
+                        {/* Join / Ready Button */}
+                        {!this.state.isReady && (
+                            <button
+                                className="w-full border border-primary bg-primary-container/20 hover:bg-primary-container py-3 font-label text-sm tracking-[0.3em] font-bold text-on-primary-container transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                                onClick={this.state.isInRoom ? this.reportReady : this.attemptJoinParty}
+                                disabled={this.state.isLoading}
+                            >
+                                {this.state.isLoading
+                                    ? 'CONNECTING...'
+                                    : this.state.isInRoom
+                                        ? 'CONFIRM READY'
+                                        : 'JOIN GAME'}
+                            </button>
+                        )}
+
+                        {/* Ready State */}
+                        {this.state.isReady && (
+                            <div className="border border-tertiary/50 bg-tertiary/10 p-4 text-center">
+                                <p className="font-label text-sm tracking-[0.3em] text-tertiary">STATUS: READY FOR DEPLOYMENT</p>
+                                <p className="font-label text-[10px] text-outline tracking-widest mt-1">Awaiting all operatives...</p>
+                            </div>
+                        )}
+
+                        {/* Player List */}
+                        {this.state.players.length > 0 && (
+                            <div>
+                                <div className="font-label text-[10px] tracking-widest uppercase text-outline mb-3">
+                                    OPERATIVE ROSTER
+                                </div>
+                                <div className="space-y-1">
+                                    {this.state.players.map((item, index) => (
+                                        <div
+                                            key={index}
+                                            className={`flex items-center justify-between px-4 py-3 border-l-2 ${
+                                                item.isReady
+                                                    ? 'border-tertiary bg-tertiary/5'
+                                                    : 'border-error bg-error/5'
+                                            }`}
+                                        >
+                                            <span className="font-label text-sm text-on-surface">
+                                                <span className="text-outline mr-2">{index + 1}.</span>
+                                                {item.name}
+                                            </span>
+                                            <span className={`font-label text-[10px] tracking-widest ${
+                                                item.isReady ? 'text-tertiary' : 'text-error'
+                                            }`}>
+                                                {item.isReady ? 'READY' : 'WAITING'}
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                    </div>
                 </div>
             </div>
         )

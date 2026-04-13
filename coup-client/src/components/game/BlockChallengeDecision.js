@@ -1,5 +1,10 @@
 import React, { Component } from 'react'
 
+const INFLUENCE_COLORS = {
+    duke: '#bbcf83', captain: '#a88a86', assassin: '#9a1a1a',
+    contessa: '#ffb4ac', ambassador: '#cdc6b2',
+};
+
 export default class BlockChallengeDecision extends Component {
 
     vote = (isChallenging) => {
@@ -18,12 +23,34 @@ export default class BlockChallengeDecision extends Component {
     }
 
     render() {
+        const { counterAction, prevAction } = this.props;
+        const claimColor = INFLUENCE_COLORS[counterAction.claim] || '#a88a86';
+        const name = (n) => (
+            <span style={{ color: '#ffb4ac' }} className="font-label">{n}</span>
+        );
+
         return (
-            <>
-                <p>{this.props.counterAction.source} is trying to block {this.props.prevAction.action} from {this.props.prevAction.source} as {this.props.counterAction.claim}</p>
-                <button onClick={() => this.vote(true)}>Challenge</button>
-                {/* <button onClick={() => this.vote(false)}>Pass</button> */}
-            </>
+            <div>
+                <div
+                    className="font-label text-[10px] tracking-[0.4em] uppercase mb-3"
+                    style={{ color: claimColor }}
+                >
+                    BLOCK VERIFICATION
+                </div>
+                <p className="font-body text-sm text-on-surface/80 mb-4 leading-relaxed">
+                    {name(counterAction.source)} claims{' '}
+                    <span style={{ color: claimColor }} className="font-label">
+                        {counterAction.claim.toUpperCase()}
+                    </span>{' '}
+                    to block {prevAction.action.replace(/_/g, ' ')} from {name(prevAction.source)}
+                </p>
+                <button
+                    onClick={() => this.vote(true)}
+                    className="w-full bg-primary-container hover:bg-[#7a1414] text-[#f1e0ce] py-3 font-label text-xs tracking-widest uppercase transition-all"
+                >
+                    CHALLENGE BLOCK
+                </button>
+            </div>
         )
     }
 }

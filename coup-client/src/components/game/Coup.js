@@ -7,11 +7,15 @@ import RevealDecision from './RevealDecision';
 import BlockDecision from './BlockDecision';
 import ChooseInfluence from './ChooseInfluence';
 import ExchangeInfluences from './ExchangeInfluences';
-import './CoupStyles.css';
-import EventLog from './EventLog';
-import ReactModal from 'react-modal';
-import CheatSheetModal from '../CheatSheetModal';
-import RulesModal from '../RulesModal';
+import '../../styles/sovereign-ledger.css';
+import SideNav from './SideNav';
+import GameStatusHeader from './GameStatusHeader';
+import CentralDeck from './CentralDeck';
+import PlayerHand from './PlayerHand';
+import DossierPanel from './DossierPanel';
+import LogsPanel from './LogsPanel';
+import IntelPanel from './IntelPanel';
+import CoinAnimation from './CoinAnimation';
 
 export default class Coup extends Component {
 
@@ -39,6 +43,9 @@ export default class Coup extends Component {
              waiting: true,
              disconnected: false,
              secondsLeft: null,
+             sideNavTab: 'command',
+             coinAnims: [],
+             glitchActive: false,
         }
         const bind = this;
 
@@ -82,6 +89,7 @@ export default class Coup extends Component {
             bind.setState({ currentPlayer });
         });
         this.props.socket.on('g-addLog', (log) => {
+            bind.triggerCoinAnimation(log);
             let splitLog=  log.split(' ');
             let coloredLog = [];
             coloredLog = splitLog.map((item, index) => {
@@ -113,6 +121,8 @@ export default class Coup extends Component {
             if(action.source !== bind.props.name) {
                 bind.setState({ action });
                 bind.startCountdown(timeLimit);
+                bind.setState({ glitchActive: true });
+                setTimeout(() => bind.setState({ glitchActive: false }), 600);
             }
         });
 
@@ -244,136 +254,302 @@ export default class Coup extends Component {
         this.doneChallengeBlockingVote();
     }
 
+    getElementCenter = (id) => {
+        const el = document.getElementById(id);
+        if (!el) return null;
+        const rect = el.getBoundingClientRect();
+        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    }
+
+    triggerCoinAnimation = (log) => {
+        const match = log.match(/^(.+) used (income|tax|foreign_aid|steal)(?: on (.+))?$/);
+        if (!match) return;
+        const [, source, action, target] = match;
+
+        const treasury   = this.getElementCenter('coup-treasury-area')
+                        || { x: window.innerWidth * 0.65, y: 120 };
+        const boardCenter = this.getElementCenter('coup-board-area')
+                         || { x: window.innerWidth * 0.6, y: window.innerHeight * 0.38 };
+        const handPos    = { x: window.innerWidth * 0.6, y: window.innerHeight - 80 };
+
+        let start, end;
+        if (action === 'steal') {
+            if (source === this.props.name) {
+                start = handPos;
+                end   = { x: boardCenter.x + 40, y: boardCenter.y - 20 };
+            } else if (target === this.props.name) {
+                start = { x: boardCenter.x + 40, y: boardCenter.y - 20 };
+                end   = handPos;
+            } else {
+                return;
+            }
+        } else {
+            start = treasury;
+            end   = source === this.props.name ? handPos : boardCenter;
+        }
+
+        const id = Date.now() + Math.random();
+        this.setState(prev => ({ coinAnims: [...prev.coinAnims, { id, sx: start.x, sy: start.y, ex: end.x, ey: end.y }] }));
+    }
+
+    removeCoinAnim = (id) => {
+        this.setState(prev => ({ coinAnims: prev.coinAnims.filter(a => a.id !== id) }));
+    }
+
     influenceColorMap = {
-        duke: '#D55DC7',
-        captain: '#80C6E5',
-        assassin: '#2B2B2B',
-        contessa: '#E35646',
-        ambassador: '#B4CA1F'
+        duke:       '#bbcf83',
+        captain:    '#a88a86',
+        assassin:   '#9a1a1a',
+        contessa:   '#ffb4ac',
+        ambassador: '#cdc6b2',
     }
 
     render() {
-        let actionDecision = null
-        let currentPlayer = null
-        let revealDecision = null
-        let challengeDecision = null
-        let blockChallengeDecision = null
-        let chooseInfluenceDecision = null
-        let blockDecision = null
-        let influences = null
-        let pass = null
-        let coins = null
-        let exchangeInfluences = null
-        let playAgain = null
-        let countdown = null
-        let isWaiting = true
-        let waiting = null
+        const { players, playerIndex, isDead, isChooseAction, action, blockChallengeRes,
+                blockingAction, revealingRes, isChoosingInfluence, exchangeInfluence,
+                currentPlayer, winner, playAgain, logs, secondsLeft, sideNavTab, disconnected,
+                coinAnims, glitchActive } = this.state;
 
-        if(this.state.isChooseAction && this.state.playerIndex != null) {
-            isWaiting = false;
-            actionDecision = <ActionDecision doneAction={this.doneAction} name={this.props.name} socket={this.props.socket} money={this.state.players[this.state.playerIndex].money} players={this.state.players}></ActionDecision>
-        }
-        if(this.state.currentPlayer) {
-            currentPlayer = <p>It is <b>{this.state.currentPlayer}</b>'s turn</p>
-        }
-        if(this.state.revealingRes) {
-            isWaiting = false;
-            revealDecision = <RevealDecision doneReveal={this.doneReveal} name ={this.props.name} socket={this.props.socket} res={this.state.revealingRes} influences={this.state.players.filter(x => x.name === this.props.name)[0].influences}></RevealDecision>
-        }
-        if(this.state.isChoosingInfluence) {
-            isWaiting = false;
-            chooseInfluenceDecision = <ChooseInfluence doneChooseInfluence={this.doneChooseInfluence} name ={this.props.name} socket={this.props.socket} influences={this.state.players.filter(x => x.name === this.props.name)[0].influences}></ChooseInfluence>
-        }
-        if(this.state.action != null || this.state.blockChallengeRes != null || this.state.blockingAction !== null){
-            pass = <button onClick={() => this.pass()}>Pass</button>
-        }
-        if(this.state.action != null) {
-            isWaiting = false;
-            challengeDecision = <ChallengeDecision closeOtherVotes={this.closeOtherVotes} doneChallengeVote={this.doneChallengeBlockingVote} name={this.props.name} action={this.state.action} socket={this.props.socket} ></ChallengeDecision>
-        }
-        if(this.state.exchangeInfluence) {
-            isWaiting = false;
-            exchangeInfluences = <ExchangeInfluences doneExchangeInfluence={this.doneExchangeInfluence} name={this.props.name} influences={this.state.exchangeInfluence} socket={this.props.socket}></ExchangeInfluences>
-        }
-        if(this.state.blockChallengeRes != null) {
-            isWaiting = false;
-            blockChallengeDecision = <BlockChallengeDecision closeOtherVotes={this.closeOtherVotes} doneBlockChallengeVote={this.doneChallengeBlockingVote} name={this.props.name} prevAction={this.state.blockChallengeRes.prevAction} counterAction={this.state.blockChallengeRes.counterAction} socket={this.props.socket} ></BlockChallengeDecision>
-        }
-        if(this.state.blockingAction !== null) {
-            isWaiting = false;
-            blockDecision = <BlockDecision closeOtherVotes={this.closeOtherVotes} doneBlockVote={this.doneChallengeBlockingVote} name={this.props.name} action={this.state.blockingAction} socket={this.props.socket} ></BlockDecision>
-        }
-        if(this.state.playerIndex != null && !this.state.isDead) {
-            influences = <>
-            <p>Your Influences</p>
-                {this.state.players[this.state.playerIndex].influences.map((influence, index) => {
-                    return  <div key={index} className="InfluenceUnitContainer">
-                                <span className="circle" style={{backgroundColor: `${this.influenceColorMap[influence]}`}}></span>
-                                <br></br>
-                                <h3>{influence}</h3>
-                            </div>
-                    })
-                }
-            </>
-            coins = <p>Coins: {this.state.players[this.state.playerIndex].money}</p>
-        }
-        if(isWaiting && !this.state.isDead) {
-            waiting = <p>Waiting for other players...</p>
-        }
-        if(this.state.secondsLeft !== null && !this.state.isDead) {
-            countdown = <p><b>{this.state.secondsLeft}s</b> to decide</p>
-        }
-        if(this.state.disconnected) {
+        const myPlayer   = playerIndex != null ? players[playerIndex] : null;
+        const opponents  = players.filter(p => p.name !== this.props.name);
+        const hasVote    = action != null || blockChallengeRes != null || blockingAction !== null;
+        const hasOverlay = hasVote || !!revealingRes || isChoosingInfluence || !!exchangeInfluence;
+
+        // ── Disconnected ──────────────────────────────────────────────────────
+        if (disconnected) {
             return (
-                <div className="GameContainer">
-                    <div className="GameHeader">
-                        <div className="PlayerInfo">
-                            <p>You are: {this.props.name}</p>
-                            {coins}
-                        </div>
-                        <RulesModal/>
-                        <CheatSheetModal/>
+                <div className="dark min-h-screen bg-surface text-on-background font-body flex items-center justify-center">
+                    <div className="grain-overlay fixed inset-0 pointer-events-none" />
+                    <div className="bg-surface-container border border-outline-variant/30 p-12 text-center max-w-md">
+                        <span className="material-symbols-outlined text-5xl text-error block mb-4">wifi_off</span>
+                        <h2 className="font-headline text-2xl text-on-surface tracking-tighter mb-2">CONNECTION LOST</h2>
+                        <p className="font-body text-sm text-outline">Please recreate the game.</p>
                     </div>
-                    <p>You have been disconnected :c</p>
-                    <p>Please recreate the game.</p>
-                    <p>Sorry for the inconvenience (シ_ _)シ</p>
                 </div>
-            )
+            );
         }
+
+        // ── Main game layout ──────────────────────────────────────────────────
         return (
-            <div className="GameContainer">
-                <div className="GameHeader">
-                    <div className="PlayerInfo">
-                        <p>You are: {this.props.name}</p>
-                        {coins}
+            <div className="dark bg-surface text-on-background font-body flex flex-col h-screen overflow-hidden">
+                {/* Grain overlay (top layer, pointer-events-none) */}
+                <div className="grain-overlay fixed inset-0 z-[90] pointer-events-none" />
+
+                {/* Challenge glitch effect */}
+                {glitchActive && (
+                    <div
+                        className="fixed inset-0 z-[89] pointer-events-none animate-glitch"
+                        style={{ background: 'rgba(154,26,26,0.08)', mixBlendMode: 'screen' }}
+                    />
+                )}
+
+                {/* ── Header ─────────────────────────────────────────────── */}
+                <header className="bg-[#1a1208]/90 backdrop-blur-md sticky top-0 z-50 h-16 flex items-center justify-between px-8 border-b border-[#59413e]/15 shrink-0">
+                    <h1 className="font-headline font-bold uppercase tracking-widest text-[#f5edd8] text-xl">
+                        THE SOVEREIGN LEDGER
+                    </h1>
+                    {winner && (
+                        <span className="font-label text-sm text-primary tracking-widest">{winner}</span>
+                    )}
+                </header>
+
+                {/* ── Body ───────────────────────────────────────────────── */}
+                <div className="flex flex-1 overflow-hidden">
+                    {/* SideNav */}
+                    <SideNav
+                        name={this.props.name}
+                        activeTab={sideNavTab}
+                        onTabChange={tab => this.setState({ sideNavTab: tab })}
+                    />
+
+                    {/* Content area */}
+                    <div className="ml-64 [@media(max-height:500px)]:ml-14 flex-1 flex flex-col overflow-hidden">
+                        {/* Game status header (shown in all tabs) */}
+                        <div id="coup-treasury-area" className="px-8 pt-6 [@media(max-height:500px)]:pt-2 shrink-0">
+                            <GameStatusHeader
+                                currentPlayer={currentPlayer}
+                                myName={this.props.name}
+                                winner={winner}
+                                secondsLeft={isDead ? null : secondsLeft}
+                            />
+                        </div>
+
+                        {/* ── COMMAND tab ─────────────────────────────────── */}
+                        {sideNavTab === 'command' && (
+                            <div id="coup-board-area" className="flex-1 relative overflow-hidden">
+                                {/* Spatial board: opponents + deck + hand */}
+                                <PlayerBoard
+                                    players={opponents}
+                                    currentPlayer={currentPlayer}
+                                />
+                                <CentralDeck />
+                                <div id="coup-hand-area" style={{ display: 'contents' }}>
+                                    {myPlayer && <PlayerHand influences={myPlayer.influences} />}
+                                </div>
+
+                                {/* Waiting indicator */}
+                                {!hasOverlay && !isDead && !isChooseAction && (
+                                    <div className="absolute bottom-32 inset-x-0 flex justify-center pointer-events-none">
+                                        <span className="font-label text-[10px] tracking-[0.4em] uppercase text-outline/40">
+                                            MONITORING OPERATIONS...
+                                        </span>
+                                    </div>
+                                )}
+
+                                {/* Dead overlay */}
+                                {isDead && (
+                                    <div className="fixed inset-0 z-30 bg-surface/70 backdrop-blur-sm flex items-center justify-center pointer-events-none">
+                                        <div className="text-center">
+                                            <p className="font-label text-sm tracking-widest text-error/60 uppercase">
+                                                OPERATIVE ELIMINATED
+                                            </p>
+                                            <p className="font-label text-[10px] text-outline mt-2">
+                                                Observing remaining operatives...
+                                            </p>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Vote decision overlay (challenge / block / block-challenge) */}
+                                {hasVote && !isDead && (
+                                    <div className="fixed inset-0 z-30 bg-surface/50 backdrop-blur-sm flex items-center justify-center">
+                                        <div className="bg-surface-container border border-outline-variant/30 p-6 w-full max-w-md mx-4 space-y-3">
+                                            {/* Countdown */}
+                                            {secondsLeft !== null && (
+                                                <div className="flex items-center gap-2 pb-3 border-b border-outline-variant/20">
+                                                    <span className={`w-2 h-2 rounded-full shrink-0 ${secondsLeft <= 5 ? 'bg-error animate-pulse' : 'bg-outline/50'}`} />
+                                                    <span className="font-label text-[10px] tracking-widest text-outline uppercase">
+                                                        Auto-pass in{' '}
+                                                        <span className={secondsLeft <= 5 ? 'text-error' : 'text-on-surface'}>
+                                                            {secondsLeft}s
+                                                        </span>
+                                                    </span>
+                                                </div>
+                                            )}
+                                            {action != null && (
+                                                <ChallengeDecision
+                                                    closeOtherVotes={this.closeOtherVotes}
+                                                    doneChallengeVote={this.doneChallengeBlockingVote}
+                                                    name={this.props.name}
+                                                    action={action}
+                                                    socket={this.props.socket}
+                                                />
+                                            )}
+                                            {blockChallengeRes != null && (
+                                                <BlockChallengeDecision
+                                                    closeOtherVotes={this.closeOtherVotes}
+                                                    doneBlockChallengeVote={this.doneChallengeBlockingVote}
+                                                    name={this.props.name}
+                                                    prevAction={blockChallengeRes.prevAction}
+                                                    counterAction={blockChallengeRes.counterAction}
+                                                    socket={this.props.socket}
+                                                />
+                                            )}
+                                            {blockingAction !== null && (
+                                                <BlockDecision
+                                                    closeOtherVotes={this.closeOtherVotes}
+                                                    doneBlockVote={this.doneChallengeBlockingVote}
+                                                    name={this.props.name}
+                                                    action={blockingAction}
+                                                    socket={this.props.socket}
+                                                />
+                                            )}
+                                            <button
+                                                className="w-full border border-outline-variant/30 bg-surface-container-low py-2 font-label text-xs tracking-widest text-outline hover:text-on-surface hover:bg-surface-container transition-all"
+                                                onClick={this.pass}
+                                            >
+                                                PASS
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Reveal decision overlay */}
+                                {revealingRes && !isDead && (
+                                    <div className="fixed inset-0 z-30 bg-surface/50 backdrop-blur-sm flex items-center justify-center">
+                                        <RevealDecision
+                                            doneReveal={this.doneReveal}
+                                            name={this.props.name}
+                                            socket={this.props.socket}
+                                            res={revealingRes}
+                                            influences={players.filter(x => x.name === this.props.name)[0]?.influences || []}
+                                        />
+                                    </div>
+                                )}
+
+                                {/* Choose influence overlay */}
+                                {isChoosingInfluence && !isDead && (
+                                    <div className="fixed inset-0 z-30 bg-surface/50 backdrop-blur-sm flex items-center justify-center">
+                                        <ChooseInfluence
+                                            doneChooseInfluence={this.doneChooseInfluence}
+                                            name={this.props.name}
+                                            socket={this.props.socket}
+                                            influences={players.filter(x => x.name === this.props.name)[0]?.influences || []}
+                                        />
+                                    </div>
+                                )}
+
+                                {/* Exchange overlay */}
+                                {exchangeInfluence && !isDead && (
+                                    <div className="fixed inset-0 z-30 bg-surface/50 backdrop-blur-sm flex items-center justify-center">
+                                        <ExchangeInfluences
+                                            doneExchangeInfluence={this.doneExchangeInfluence}
+                                            name={this.props.name}
+                                            influences={exchangeInfluence}
+                                            socket={this.props.socket}
+                                        />
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {/* ── LOGS tab ────────────────────────────────────── */}
+                        {sideNavTab === 'logs' && <LogsPanel logs={logs} />}
+
+                        {/* ── DOSSIER tab ──────────────────────────────────── */}
+                        {sideNavTab === 'dossier' && <DossierPanel />}
+
+                        {/* ── INTEL tab ────────────────────────────────────── */}
+                        {sideNavTab === 'intel' && <IntelPanel />}
                     </div>
-                    <div className="CurrentPlayer">
-                        {currentPlayer}
+                </div>
+
+                {/* ── Action bar (fixed bottom, command tab, alive) ───────── */}
+                {sideNavTab === 'command' && !isDead && (
+                    <ActionDecision
+                        doneAction={this.doneAction}
+                        name={this.props.name}
+                        socket={this.props.socket}
+                        money={myPlayer ? myPlayer.money : 0}
+                        players={players}
+                        isActive={isChooseAction && playerIndex != null}
+                    />
+                )}
+
+                {/* ── Play again ─────────────────────────────────────────── */}
+                {playAgain && (
+                    <div className="fixed bottom-28 inset-x-0 flex justify-center z-40 pointer-events-none">
+                        <button
+                            className="border border-tertiary bg-tertiary/10 hover:bg-tertiary/20 px-12 py-3 font-label text-sm tracking-[0.3em] text-tertiary transition-all pointer-events-auto"
+                            onClick={() => this.props.socket.emit('g-playAgain')}
+                        >
+                            INITIATE NEW PROTOCOL
+                        </button>
                     </div>
-                    <RulesModal/>
-                    <CheatSheetModal/>
-                    <EventLog logs={this.state.logs}></EventLog>
-                </div>
-                <div className="InfluenceSection">
-                    {influences}
-                </div>
-                <PlayerBoard players={this.state.players}></PlayerBoard>
-                <div className="DecisionsSection">
-                    {waiting}
-                    {countdown}
-                    {revealDecision}
-                    {chooseInfluenceDecision}
-                    {actionDecision}
-                    {exchangeInfluences}
-                    {challengeDecision}
-                    {blockChallengeDecision}
-                    {blockDecision}
-                    {pass}
-                    {playAgain}
-                </div>
-                <b>{this.state.winner}</b>
-                {this.state.playAgain}
+                )}
+
+                {/* ── Coin animations ────────────────────────────────────── */}
+                {coinAnims.map(anim => (
+                    <CoinAnimation
+                        key={anim.id}
+                        startX={anim.sx}
+                        startY={anim.sy}
+                        endX={anim.ex}
+                        endY={anim.ey}
+                        onDone={() => this.removeCoinAnim(anim.id)}
+                    />
+                ))}
             </div>
-        )
+        );
     }
 }
