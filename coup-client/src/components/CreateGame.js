@@ -6,7 +6,7 @@ import Coup from "./game/Coup";
 import LandingBackground from "./shared/LandingBackground";
 
 import axios from "axios";
-const baseUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
+const baseUrl = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8000";
 
 const DEFAULT_SETTINGS = {
   maxPlayers: 6,
