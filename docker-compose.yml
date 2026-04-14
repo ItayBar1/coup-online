@@ -1,0 +1,32 @@
+services:
+  coup:
+    image: ghcr.io/${GITHUB_REPOSITORY:-itaybar1/coup-online}:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_BACKEND_URL: ""
+    ports:
+      - "${HOST_PORT:-8000}:8000"
+    environment:
+      PORT: "8000"
+      NODE_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Watchtower: auto-pulls new images from GHCR every 5 minutes.
+  # Requires Docker to be logged in to GHCR on the host:
+  #   echo $GHCR_PAT | docker login ghcr.io -u <github-username> --password-stdin
+  watchtower:
+    image: containrrr/watchtower:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${HOME}/.docker/config.json:/config.json:ro
+    # Watch only the 'coup' container, poll every 5 minutes
+    command: --interval 300 coup
+    restart: unless-stopped

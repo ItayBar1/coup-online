@@ -1,0 +1,12 @@
+.git
+.gitignore
+node_modules
+*/node_modules
+*.log
+.env
+.env.*
+coup-client/dist
+coup-client/build
+plans/
+.husky
+.claude

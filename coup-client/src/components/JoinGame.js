@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import io from "socket.io-client";
 import Coup from "./game/Coup";
 import LandingBackground from "./shared/LandingBackground";
+import logger from "../utils/logger";
 
 import axios from "axios";
 const baseUrl = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8000";
@@ -46,16 +47,16 @@ export default class JoinGame extends Component {
     const bind = this;
     const socket = io(`${baseUrl}/${this.state.roomCode}`);
     this.setState({ socket });
-    console.log("socket created");
+    logger.socket.connected(`/${this.state.roomCode}`);
     socket.emit("setName", this.state.name);
 
     socket.on("joinSuccess", function () {
-      console.log("join successful");
+      logger.info("Join successful", { component: "JoinGame" });
       bind.setState({ isInRoom: true, isLoading: false });
     });
 
     socket.on("joinFailed", function (err) {
-      console.log("join failed, cause: " + err);
+      logger.warn("Join failed", { component: "JoinGame", cause: err });
       bind.setState({
         errorMsg: err,
         isError: true,
@@ -73,7 +74,10 @@ export default class JoinGame extends Component {
     });
 
     socket.on("partyUpdate", (players) => {
-      console.log(players);
+      logger.debug("Party update received", {
+        component: "JoinGame",
+        count: players.length,
+      });
       this.setState({ players });
       if (
         players.length >= 3 &&
@@ -87,7 +91,7 @@ export default class JoinGame extends Component {
     });
 
     socket.on("disconnected", function () {
-      console.log("You've lost connection with the server");
+      logger.socket.disconnected("server_disconnect");
     });
   };
 
@@ -118,7 +122,10 @@ export default class JoinGame extends Component {
         }
       })
       .catch(function (err) {
-        console.log("error in getting exists", err);
+        logger.error("Server error checking room", {
+          component: "JoinGame",
+          error: err?.message ?? String(err),
+        });
         bind.setState({
           isLoading: false,
           errorMsg: "Server error",

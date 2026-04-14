@@ -4,6 +4,7 @@ import io from "socket.io-client";
 import { ReactSortable } from "react-sortablejs";
 import Coup from "./game/Coup";
 import LandingBackground from "./shared/LandingBackground";
+import logger from "../utils/logger";
 
 import axios from "axios";
 const baseUrl = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8000";
@@ -45,11 +46,11 @@ export default class CreateGame extends Component {
     const bind = this;
     const socket = io(`${baseUrl}/${roomCode}`);
     this.setState({ socket });
-    console.log("socket created");
+    logger.socket.connected(`/${roomCode}`);
     socket.emit("setName", this.state.name);
 
     socket.on("joinSuccess", function () {
-      console.log("join successful");
+      logger.info("Join successful", { component: "CreateGame" });
       bind.setState({
         isLoading: false,
         isInRoom: true,
@@ -57,12 +58,12 @@ export default class CreateGame extends Component {
     });
 
     socket.on("joinFailed", function (err) {
-      console.log("join failed, cause: " + err);
+      logger.warn("Join failed", { component: "CreateGame", cause: err });
       bind.setState({ isLoading: false });
     });
 
     socket.on("leader", function () {
-      console.log("You are the leader");
+      logger.info("Assigned as party leader", { component: "CreateGame" });
       bind.setState({ isLeader: true });
     });
 
@@ -71,7 +72,10 @@ export default class CreateGame extends Component {
     });
 
     socket.on("partyUpdate", (players) => {
-      console.log(players);
+      logger.debug("Party update received", {
+        component: "CreateGame",
+        count: players.length,
+      });
       this.setState({ players });
       if (
         players.length >= 2 &&
@@ -85,7 +89,7 @@ export default class CreateGame extends Component {
     });
 
     socket.on("disconnected", function () {
-      console.log("You've lost connection with the server");
+      logger.socket.disconnected("server_disconnect");
     });
   };
 
@@ -104,7 +108,10 @@ export default class CreateGame extends Component {
         bind.joinParty(res.data.namespace);
       })
       .catch(function (err) {
-        console.log("error in creating namespace", err);
+        logger.error("Failed to create namespace", {
+          component: "CreateGame",
+          error: err?.message ?? String(err),
+        });
         bind.setState({
           isLoading: false,
           errorMsg: "Error creating room, server is unreachable",
