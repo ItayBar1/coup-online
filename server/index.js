@@ -1,5 +1,6 @@
 const express = require("express");
 const moment = require("moment");
+const path = require("path");
 
 // Server/express setup
 const app = express();
@@ -191,6 +192,12 @@ startGame = (players, gameSocket, namespace, settings) => {
   );
   namespaces[namespace.substring(1)].start();
 };
+
+const clientDist = path.join(__dirname, "../coup-client/dist");
+app.use(express.static(clientDist));
+app.get("*", (req, res) => {
+  res.sendFile(path.join(clientDist, "index.html"));
+});
 
 server.listen(process.env.PORT || port, function () {
   console.log(`listening on ${process.env.PORT || port}`);

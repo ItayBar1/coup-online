@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "prepare": "husky"
+    "prepare": "husky",
+    "build": "npm ci --prefix server && npm ci --prefix coup-client && npm run build --prefix coup-client",
+    "start": "node server/index.js"
   },
   "devDependencies": {
     "husky": "^9.1.7",
