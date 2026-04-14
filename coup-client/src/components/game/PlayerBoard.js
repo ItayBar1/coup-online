@@ -1,16 +1,16 @@
-import React from 'react';
-import { OPPONENT_POSITIONS, POSITION_CLASSES } from './playerPositions';
+import React from "react";
+import { OPPONENT_POSITIONS, POSITION_CLASSES } from "./playerPositions";
 
 function OpponentCard({ player, isActive }) {
   return (
     <div
       className="bg-surface-container-low w-44 p-4 border-l-2"
-      style={{ borderLeftColor: isActive ? '#ffb4ac' : '#59413e' }}
+      style={{ borderLeftColor: isActive ? "#ffb4ac" : "#59413e" }}
     >
       <div className="flex justify-between items-start mb-3">
         <span
           className="font-label text-xs truncate mr-2"
-          style={{ color: isActive ? '#ffb4ac' : '#a88a86' }}
+          style={{ color: isActive ? "#ffb4ac" : "#a88a86" }}
         >
           {player.name}
         </span>
@@ -26,13 +26,13 @@ function OpponentCard({ player, isActive }) {
       <div className="flex items-center gap-2">
         <span
           className="material-symbols-outlined text-sm"
-          style={{ color: isActive ? '#ffb4ac' : '#cdc6b2' }}
+          style={{ color: isActive ? "#ffb4ac" : "#cdc6b2" }}
         >
           payments
         </span>
         <span
           className="font-headline text-xl"
-          style={{ color: isActive ? '#ffb4ac' : '#f1e0ce' }}
+          style={{ color: isActive ? "#ffb4ac" : "#f1e0ce" }}
         >
           {player.money}
         </span>
@@ -50,12 +50,13 @@ export default function PlayerBoard({ players, currentPlayer }) {
   return (
     <>
       {players.map((player, index) => {
-        const posKey   = positionKeys[index];
+        const posKey = positionKeys[index];
         if (!posKey) return null;
-        const posClass = POSITION_CLASSES[posKey] || '';
+        const posClass = POSITION_CLASSES[posKey] || "";
         const isActive = player.name === currentPlayer;
+        const playerElementId = `coup-player-${encodeURIComponent(player.name)}`;
         return (
-          <div key={player.name} className={posClass}>
+          <div key={player.name} className={posClass} id={playerElementId}>
             <OpponentCard player={player} isActive={isActive} />
           </div>
         );

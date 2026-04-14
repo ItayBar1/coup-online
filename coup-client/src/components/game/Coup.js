@@ -316,6 +316,11 @@ export default class Coup extends Component {
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
   };
 
+  getPlayerAnchor = (playerName) => {
+    const playerId = `coup-player-${encodeURIComponent(playerName)}`;
+    return this.getElementCenter(playerId);
+  };
+
   triggerCoinAnimation = (log) => {
     const match = log.match(
       /^(.+) used (income|tax|foreign_aid|steal)(?: on (.+))?$/
@@ -331,29 +336,44 @@ export default class Coup extends Component {
       x: window.innerWidth * 0.6,
       y: window.innerHeight * 0.38,
     };
-    const handPos = { x: window.innerWidth * 0.6, y: window.innerHeight - 80 };
+    const sourcePos = this.getPlayerAnchor(source) || boardCenter;
+    const targetPos = target
+      ? this.getPlayerAnchor(target) || boardCenter
+      : null;
 
-    let start, end;
+    const coinCountByAction = {
+      income: 1,
+      foreign_aid: 2,
+      tax: 3,
+    };
+
+    let start = treasury;
+    let end = sourcePos;
+    let coinCount = coinCountByAction[action] ?? 0;
+
     if (action === "steal") {
-      if (source === this.props.name) {
-        start = handPos;
-        end = { x: boardCenter.x + 40, y: boardCenter.y - 20 };
-      } else if (target === this.props.name) {
-        start = { x: boardCenter.x + 40, y: boardCenter.y - 20 };
-        end = handPos;
-      } else {
-        return;
-      }
-    } else {
-      start = treasury;
-      end = source === this.props.name ? handPos : boardCenter;
+      if (!targetPos) return;
+      const targetPlayer = this.state.players.find(
+        (player) => player.name === target
+      );
+      coinCount = Math.min(2, targetPlayer?.money ?? 0);
+      if (coinCount <= 0) return;
+      start = targetPos;
+      end = sourcePos;
     }
 
-    const id = Date.now() + Math.random();
+    const now = Date.now();
     this.setState((prev) => ({
       coinAnims: [
         ...prev.coinAnims,
-        { id, sx: start.x, sy: start.y, ex: end.x, ey: end.y },
+        ...Array.from({ length: coinCount }).map((_, index) => ({
+          id: `${now}-${index}-${Math.random()}`,
+          sx: start.x + (index - (coinCount - 1) / 2) * 8,
+          sy: start.y - index * 6,
+          ex: end.x + (index - (coinCount - 1) / 2) * 8,
+          ey: end.y,
+          delay: index * 120,
+        })),
       ],
     }));
   };
@@ -659,6 +679,7 @@ export default class Coup extends Component {
             startY={anim.sy}
             endX={anim.ex}
             endY={anim.ey}
+            delay={anim.delay}
             onDone={() => this.removeCoinAnim(anim.id)}
           />
         ))}
