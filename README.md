@@ -1,44 +1,69 @@
 # Coup Online
 
+Online multiplayer implementation of the board game [Coup](https://boardgamegeek.com/boardgame/131357/coup). Players create or join a room with a 6-digit code and play in real-time.
 
-Perfect to play with friends during quarantine c:
-## About the project
-This project consists of two parts
-1. The React.js client
-2. The Node.js/Express.js backend server
+## Tech Stack
 
-Technologies: React.js, Node.js, Express.js, Socket.io
+- **Frontend:** React 18, Vite, Tailwind CSS, Socket.IO client 2.3.0
+- **Backend:** Node.js, Express, Socket.IO 2.5.0
+- **Deployment:** Docker, GitHub Actions CI/CD → GHCR, Watchtower auto-updates
+
+## Local Development
+
+**Prerequisites:** Node.js 20+
+
+```bash
+# Backend (port 8000)
+cd server && npm install && npm start
+
+# Frontend (port 3000, separate terminal)
+cd coup-client && npm install && npm start
+```
+
+The client defaults to `http://localhost:8000` as the backend. Override with `VITE_BACKEND_URL` if needed.
+
+## Running Tests
+
+```bash
+# Backend (Jest)
+cd server && npm test
+
+# Frontend (Vitest)
+cd coup-client && npm test
+```
+
+## Production Build
+
+```bash
+# From repo root — installs all deps and builds frontend into coup-client/dist/
+npm run build
+npm start   # Express serves frontend + API on port 8000
+```
+
+Or with Docker:
+
+```bash
+docker compose up -d
+```
 
 ## Features
 
-### Party Creation
+- **Room system:** 6-digit codes, drag-and-drop turn order, configurable settings (max players, time limits)
+- **Individualized connections:** Server sends targeted socket messages; clients never receive other players' hidden cards
+- **Voting system:** Challenge/block windows with per-player voting; resolves immediately on decisive vote
+- **Game event log:** Last 4 actions visible to all players
+- **Structured logging:** JSON server logs, browser console + Vite terminal forwarding in dev
+- **Auto-cleanup:** Empty namespaces garbage-collected after 10 seconds
 
-Seamlessly create a party with a 6-digit code. Copy the code using the 'copy to clipboard' button and send it to those whom you wish to play with. 
+## Deployment
 
-Once a player joins, they will appear as 'Not Ready' on the list of players. The joining player must hit the 'Ready' button to notify the game creator that they are ready to start the game. 
+See [README_DEPLOY.md](./README_DEPLOY.md) for home-server setup with Docker Compose, GHCR authentication, Watchtower auto-updates, and optional Cloudflare Tunnel (no port-forwarding required).
 
-If a player has joined the room, but disconnects (ex. closing the tab), the player will also be removed from the list of party members and will have to rejoin. 
+## CI/CD
 
-The game creator can click/touch and drag each party member around in the list to form the desired turn order. 
+Every push to `main` builds and pushes a Docker image to GHCR with two tags:
 
-### Individualized Connections 
+- `latest` — always the newest main-branch build
+- `sha-<commit>` — immutable, for rollbacks
 
-The backend architecture is designed to send individualized information to each client. This prevents excess information from being shared with clients that do not require it.
-
-### Client Voting system
-
-On events such as a challenge, block, or a challenge of a block, the server will open up voting where each client will cast their vote. Voters are chosen based on the source, target, and type of event. Voting finishes when either all voters have passed, or immediately when a voter chooses to challenge or block. 
-
-### Game Event Log
-
-In the client, there is an event log showing all players the last 4 actions to help them keep track of the game. This log also shows when a player disconnects.
-
-### Garbage Collection
-
-A script is run to destroy game instances that have 0 connections.
-
-
-### Chicken Drumstick Emoji
-
-Courtesy of https://twemoji.twitter.com/
-
+Pull requests build only (no push) as a CI gate.
