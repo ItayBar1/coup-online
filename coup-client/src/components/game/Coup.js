@@ -46,6 +46,7 @@ export default class Coup extends Component {
       sideNavTab: "command",
       coinAnims: [],
       glitchActive: false,
+      deckCount: null,
     };
     const bind = this;
 
@@ -77,7 +78,6 @@ export default class Coup extends Component {
       logger.info("Players updated", { count: players.length });
       bind.setState({ playAgain: null });
       bind.setState({ winner: null });
-      players = players.filter((x) => !x.isDead);
       let playerIndex = null;
       for (let i = 0; i < players.length; i++) {
         if (players[i].name === this.props.name) {
@@ -85,16 +85,16 @@ export default class Coup extends Component {
           break;
         }
       }
-      if (playerIndex == null) {
-        this.setState({ isDead: true });
-      } else {
-        this.setState({ isDead: false });
-      }
+      const myPlayer = playerIndex != null ? players[playerIndex] : null;
+      this.setState({ isDead: myPlayer?.isDead ?? true });
       logger.debug("Player index resolved", {
         playerIndex,
-        isDead: playerIndex == null,
+        isDead: myPlayer?.isDead ?? true,
       });
       bind.setState({ playerIndex, players });
+    });
+    this.props.socket.on("g-updateDeckCount", (deckCount) => {
+      bind.setState({ deckCount });
     });
     this.props.socket.on("g-updateCurrentPlayer", ({ name, timeLimit }) => {
       logger.info("Current player updated", { name, timeLimit });
@@ -403,6 +403,7 @@ export default class Coup extends Component {
       disconnected,
       coinAnims,
       glitchActive,
+      deckCount,
     } = this.state;
 
     const myPlayer = playerIndex != null ? players[playerIndex] : null;
@@ -496,7 +497,7 @@ export default class Coup extends Component {
                   players={opponents}
                   currentPlayer={currentPlayer}
                 />
-                <CentralDeck />
+                <CentralDeck deckCount={deckCount} />
                 <div id="coup-hand-area" style={{ display: "contents" }}>
                   {myPlayer && <PlayerHand influences={myPlayer.influences} />}
                 </div>
