@@ -259,3 +259,83 @@ describe("CoupGame — nextTurn guards", () => {
     expect(game.currentPlayer).not.toBe(currentBefore);
   });
 });
+
+describe("CoupGame — new terminate/challenge edge cases", () => {
+  test("terminate eliminates player, reveals cards, and emits g-terminated", () => {
+    const { game, gameSocket, playerSockets } = buildGame(["Alice", "Bob"]);
+    const aliceSock = playerSockets["sock-0"];
+
+    game.players[0].influences = ["duke", "assassin"];
+    game.players[0].revealedInfluences = [];
+    game.players[0].isDead = false;
+
+    aliceSock._trigger("g-terminatePlayer", { playerName: "Alice" });
+
+    expect(game.players[0].isDead).toBe(true);
+    expect(game.players[0].influences).toEqual([]);
+    expect(game.players[0].revealedInfluences).toEqual(
+      expect.arrayContaining(["duke", "assassin"])
+    );
+    expect(
+      gameSocket._toEmitted.some(
+        (e) => e.to === "sock-0" && e.event === "g-terminated"
+      )
+    ).toBe(true);
+  });
+
+  test("failed challenge auto-loses single challenger influence and keeps non-claimed challengee card", () => {
+    const { game, playerSockets } = buildGame(["Alice", "Bob"]);
+    const aliceSock = playerSockets["sock-0"];
+    const bobSock = playerSockets["sock-1"];
+
+    game.currentPlayer = 0;
+    game.isTurnOpen = true;
+    game.players[0].money = 3;
+    game.players[0].influences = ["assassin", "duke"];
+    game.players[1].influences = ["captain"]; // single influence => auto lose
+    game.players[1].revealedInfluences = [];
+
+    aliceSock._trigger("g-actionDecision", {
+      action: { action: "assassinate", source: "Alice", target: "Bob" },
+    });
+    bobSock._trigger("g-challengeDecision", {
+      action: { action: "assassinate", source: "Alice", target: "Bob" },
+      isChallenging: true,
+      challengee: "Alice",
+      challenger: "Bob",
+    });
+
+    // Bob lost immediately from failed challenge; no choose modal needed
+    expect(game.players[1].influences).toEqual([]);
+    expect(game.players[1].revealedInfluences).toEqual(
+      expect.arrayContaining(["captain"])
+    );
+    expect(game.isChooseInfluenceOpen).toBe(false);
+    // Non-claimed card should remain (only challenged assassin should be replace candidate)
+    expect(game.players[0].influences).toContain("duke");
+  });
+
+  test("successful challenge opens influence choice for challengee with two cards", () => {
+    const { game, playerSockets } = buildGame(["Alice", "Bob"]);
+    const aliceSock = playerSockets["sock-0"];
+    const bobSock = playerSockets["sock-1"];
+
+    game.currentPlayer = 0;
+    game.isTurnOpen = true;
+    game.players[0].influences = ["captain", "assassin"]; // no duke for tax claim
+    game.players[1].influences = ["duke", "captain"];
+
+    aliceSock._trigger("g-actionDecision", {
+      action: { action: "tax", source: "Alice", target: null },
+    });
+    bobSock._trigger("g-challengeDecision", {
+      action: { action: "tax", source: "Alice", target: null },
+      isChallenging: true,
+      challengee: "Alice",
+      challenger: "Bob",
+    });
+
+    expect(game.isChooseInfluenceOpen).toBe(true);
+    expect(game.pendingInfluencePlayerIndex).toBe(0);
+  });
+});

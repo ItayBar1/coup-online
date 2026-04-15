@@ -22,7 +22,11 @@ export default class ActionDecision extends Component {
       },
     };
     console.log(res);
-
+    this.setState({
+      isPickingTarget: false,
+      targetAction: "",
+      actionError: "",
+    });
     this.props.socket.emit("g-actionDecision", res);
     this.props.doneAction();
   };
@@ -82,14 +86,6 @@ export default class ActionDecision extends Component {
                   </button>
                 ))}
               </div>
-              <button
-                className="w-full font-label text-xs tracking-widest text-outline hover:text-on-surface transition-colors p-2 border border-outline-variant/20"
-                onClick={() =>
-                  this.setState({ isPickingTarget: false, actionError: "" })
-                }
-              >
-                CANCEL
-              </button>
               {this.state.actionError && (
                 <p className="font-label text-xs text-error mt-2 tracking-widest">
                   {this.state.actionError}

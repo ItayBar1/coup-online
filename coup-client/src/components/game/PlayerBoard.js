@@ -19,8 +19,7 @@ function RevealedInfluenceMini({ name }) {
 }
 
 function OpponentCard({ player, isActive }) {
-  const visibleInfluence =
-    player.revealedInfluences?.[player.revealedInfluences.length - 1];
+  const revealedInfluences = player.revealedInfluences || [];
   const influenceCount = player.influences?.length ?? 0;
   const isDead = player.isDead;
   const statusText =
@@ -54,11 +53,18 @@ function OpponentCard({ player, isActive }) {
           ))}
         </div>
       </div>
-      <div className="mb-3 min-h-14 flex items-center justify-between gap-2">
-        <span className="font-label text-[10px] tracking-wider uppercase text-outline">
+      <div className="mb-3 min-h-14">
+        <span className="font-label text-[10px] tracking-wider uppercase text-outline block mb-2">
           {statusText}
         </span>
-        {visibleInfluence && <RevealedInfluenceMini name={visibleInfluence} />}
+        <div className="flex items-center gap-2 flex-wrap">
+          {revealedInfluences.map((influence, idx) => (
+            <RevealedInfluenceMini
+              key={`${influence}-${idx}`}
+              name={influence}
+            />
+          ))}
+        </div>
       </div>
       <div className="flex items-center gap-2">
         <span

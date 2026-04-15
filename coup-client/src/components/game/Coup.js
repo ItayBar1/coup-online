@@ -42,6 +42,7 @@ export default class Coup extends Component {
       isDead: false,
       waiting: true,
       disconnected: false,
+      terminated: false,
       secondsLeft: null,
       sideNavTab: "command",
       coinAnims: [],
@@ -66,7 +67,14 @@ export default class Coup extends Component {
 
     this.props.socket.on("disconnect", (reason) => {
       logger.socket.disconnected(reason);
+      if (this.state.terminated) return;
       this.setState({ disconnected: true });
+    });
+
+    this.props.socket.on("g-terminated", () => {
+      this.setState({ terminated: true }, () => {
+        this.props.onTerminate?.();
+      });
     });
 
     this.props.socket.on("g-gameOver", (winner) => {
@@ -382,6 +390,12 @@ export default class Coup extends Component {
     }));
   };
 
+  terminateGame = () => {
+    this.props.socket.emit("g-terminatePlayer", {
+      playerName: this.props.name,
+    });
+  };
+
   render() {
     const {
       players,
@@ -469,6 +483,7 @@ export default class Coup extends Component {
             name={this.props.name}
             activeTab={sideNavTab}
             onTabChange={(tab) => this.setState({ sideNavTab: tab })}
+            onTerminate={this.terminateGame}
           />
 
           {/* Content area */}
@@ -499,7 +514,13 @@ export default class Coup extends Component {
                 />
                 <CentralDeck deckCount={deckCount} />
                 <div id="coup-hand-area" style={{ display: "contents" }}>
-                  {myPlayer && <PlayerHand influences={myPlayer.influences} />}
+                  {myPlayer && (
+                    <PlayerHand
+                      influences={myPlayer.influences}
+                      revealedInfluences={myPlayer.revealedInfluences || []}
+                      isDead={!!myPlayer.isDead}
+                    />
+                  )}
                 </div>
 
                 {/* Waiting indicator */}

@@ -169,7 +169,24 @@ export default class CreateGame extends Component {
 
   render() {
     if (this.state.isGameStarted) {
-      return <Coup name={this.state.name} socket={this.state.socket} />;
+      return (
+        <Coup
+          name={this.state.name}
+          socket={this.state.socket}
+          onTerminate={() => {
+            this.state.socket?.disconnect();
+            this.setState({
+              isGameStarted: false,
+              isInRoom: false,
+              isLeader: false,
+              canStart: false,
+              roomCode: "",
+              players: [],
+              socket: null,
+            });
+          }}
+        />
+      );
     }
 
     const { settings, isLeader, isInRoom } = this.state;
