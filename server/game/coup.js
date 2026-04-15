@@ -64,6 +64,7 @@ class CoupGame {
     for (let i = 0; i < this.players.length; i++) {
       this.players[i].money = 2;
       this.players[i].influences = [this.deck.pop(), this.deck.pop()];
+      this.players[i].revealedInfluences = [];
       this.players[i].isDead = false;
       this.players[i].missedTurns = 0;
     }
@@ -295,21 +296,7 @@ class CoupGame {
                 "g-addLog",
                 `${res.challengee} lost their ${res.revealedCard}`
               );
-              for (
-                let i = 0;
-                i < bind.players[challengeeIndex].influences.length;
-                i++
-              ) {
-                if (
-                  bind.players[challengeeIndex].influences[i] ==
-                  res.revealedCard
-                ) {
-                  bind.deck.push(bind.players[challengeeIndex].influences[i]);
-                  bind.deck = gameUtils.shuffleArray(bind.deck);
-                  bind.players[challengeeIndex].influences.splice(i, 1);
-                  break;
-                }
-              }
+              bind.loseInfluence(challengeeIndex, res.revealedCard);
               bind.applyAction(res.prevAction);
             }
           } else {
@@ -358,21 +345,7 @@ class CoupGame {
                 "g-addLog",
                 `${res.challengee} lost their ${res.revealedCard}`
               );
-              for (
-                let i = 0;
-                i < bind.players[challengeeIndex].influences.length;
-                i++
-              ) {
-                if (
-                  bind.players[challengeeIndex].influences[i] ==
-                  res.revealedCard
-                ) {
-                  bind.deck.push(bind.players[challengeeIndex].influences[i]);
-                  bind.deck = gameUtils.shuffleArray(bind.deck);
-                  bind.players[challengeeIndex].influences.splice(i, 1);
-                  break;
-                }
-              }
+              bind.loseInfluence(challengeeIndex, res.revealedCard);
               // BUG-02: return coins paid for assassination if the challenge succeeded
               if (res.prevAction.action === "assassinate") {
                 bind.players[challengeeIndex].money += 3;
@@ -395,18 +368,7 @@ class CoupGame {
             "g-addLog",
             `${res.playerName} lost their ${res.influence}`
           );
-          for (
-            let i = 0;
-            i < bind.players[playerIndex].influences.length;
-            i++
-          ) {
-            if (bind.players[playerIndex].influences[i] == res.influence) {
-              bind.deck.push(bind.players[playerIndex].influences[i]);
-              bind.deck = gameUtils.shuffleArray(bind.deck);
-              bind.players[playerIndex].influences.splice(i, 1);
-              break;
-            }
-          }
+          bind.loseInfluence(playerIndex, res.influence);
           bind.isChooseInfluenceOpen = false;
 
           // BUG-03: if there's a pending action (e.g. assassination after a failed challenge),
@@ -448,6 +410,23 @@ class CoupGame {
       "g-updatePlayers",
       gameUtils.exportPlayers(JSON.parse(JSON.stringify(this.players)))
     );
+    this.gameSocket.emit("g-updateDeckCount", this.deck.length);
+  }
+
+  loseInfluence(playerIndex, revealedCard) {
+    const player = this.players[playerIndex];
+    if (!player || !revealedCard) return;
+
+    const cardIndex = player.influences.findIndex(
+      (card) => card == revealedCard
+    );
+    if (cardIndex < 0) return;
+
+    this.deck.push(player.influences[cardIndex]);
+    this.deck = gameUtils.shuffleArray(this.deck);
+    player.influences.splice(cardIndex, 1);
+    player.revealedInfluences = player.revealedInfluences || [];
+    player.revealedInfluences.push(revealedCard);
   }
 
   reveal(action, counterAction, challengee, challenger, isBlock) {
@@ -581,6 +560,10 @@ class CoupGame {
       player.influences.forEach((card) => {
         this.deck.push(card);
       });
+      player.revealedInfluences = [
+        ...(player.revealedInfluences || []),
+        ...player.influences,
+      ];
       this.deck = gameUtils.shuffleArray(this.deck);
       player.influences = [];
       player.money = 0;
