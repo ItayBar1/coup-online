@@ -143,7 +143,22 @@ export default class JoinGame extends Component {
 
   render() {
     if (this.state.isGameStarted) {
-      return <Coup name={this.state.name} socket={this.state.socket} />;
+      return (
+        <Coup
+          name={this.state.name}
+          socket={this.state.socket}
+          onTerminate={() => {
+            this.state.socket?.disconnect();
+            this.setState({
+              isGameStarted: false,
+              isInRoom: false,
+              isReady: false,
+              players: [],
+              socket: null,
+            });
+          }}
+        />
+      );
     }
 
     return (

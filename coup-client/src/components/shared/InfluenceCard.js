@@ -16,6 +16,8 @@ export default function InfluenceCard({
   interactive = false,
   footerLabel,
   onClick,
+  isRevealed = false,
+  revealedLabel = "OUT OF GAME",
   className = "",
 }) {
   const key = name?.toLowerCase() || "";
@@ -31,10 +33,18 @@ export default function InfluenceCard({
     <Root
       className={`relative ${SIZE_CLASSES[sz]} bg-surface-container-highest shadow-2xl select-none group
         ${interactive ? "transition-transform duration-300 hover:-translate-y-3 cursor-pointer" : "cursor-default"}
+        ${isRevealed ? "opacity-55 saturate-50 grayscale" : ""}
         ${className}`}
       style={{ borderTop: `4px solid ${color}` }}
       onClick={onClick}
     >
+      {isRevealed && (
+        <div className="absolute -top-6 inset-x-0 flex justify-center pointer-events-none z-20">
+          <span className="px-2 py-0.5 text-[10px] tracking-widest font-label bg-error/80 text-white uppercase border border-error/40">
+            {revealedLabel}
+          </span>
+        </div>
+      )}
       <div className="grain-overlay absolute inset-0 pointer-events-none" />
       <div className={`${PADDING[sz]} h-full flex flex-col relative z-10`}>
         {/* Header */}
