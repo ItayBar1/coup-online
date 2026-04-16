@@ -1,6 +1,8 @@
 const express = require("express");
 const moment = require("moment");
 const path = require("path");
+const { randomUUID } = require("crypto");
+const logger = require("./utilities/logger");
 
 // Server/express setup
 const app = express();
@@ -48,7 +50,7 @@ app.get("/createNamespace", function (req, res) {
   const newSocket = io.of(`/${newNamespace}`);
   openSocket(newSocket, `/${newNamespace}`);
   namespaces[newNamespace] = null;
-  console.log(newNamespace + " CREATED");
+  logger.info("Namespace created", { namespace: newNamespace });
   res.json({ namespace: newNamespace });
 });
 
@@ -67,15 +69,22 @@ openSocket = (gameSocket, namespace) => {
   let settings = { ...DefaultSettings };
 
   gameSocket.on("connection", (socket) => {
-    console.log("id: " + socket.id);
+    const correlationId = randomUUID();
+    logger.info("Socket connected", {
+      socketId: socket.id,
+      correlationId,
+      namespace,
+    });
     players.push({
       player: "",
       socket_id: `${socket.id}`,
       isReady: false,
     });
-    console.log(`player ${players.length} has connected`);
+    logger.info("Player slot added", {
+      playerCount: players.length,
+      correlationId,
+    });
     socket.join(socket.id);
-    console.log("socket joined " + socket.id);
     const index = players.length - 1;
 
     const updatePartyList = () => {
@@ -84,13 +93,17 @@ openSocket = (gameSocket, namespace) => {
           return { name: x.player, socketID: x.socket_id, isReady: x.isReady };
         })
         .filter((x) => x.name != "");
-      console.log(partyMembers);
+      logger.debug("Party updated", {
+        count: partyMembers.length,
+        names: partyMembers.map((p) => p.name),
+        correlationId,
+      });
       gameSocket.emit("partyUpdate", partyMembers);
     };
 
     socket.on("setName", (name) => {
       //when client joins, it will immediately set its name
-      console.log(started);
+      logger.debug("setName received", { name, started, correlationId });
       if (started) {
         gameSocket
           .to(players[index].socket_id)
@@ -107,10 +120,13 @@ openSocket = (gameSocket, namespace) => {
             partyLeader = players[index].socket_id;
             players[index].isReady = true;
             gameSocket.to(players[index].socket_id).emit("leader");
-            console.log("PARTY LEADER IS: " + partyLeader);
+            logger.info("Party leader assigned", {
+              partyLeader,
+              correlationId,
+            });
           }
           players[index].player = name;
-          console.log(players[index]);
+          logger.info("Player joined", { name, correlationId });
           updatePartyList();
           gameSocket
             .to(players[index].socket_id)
@@ -127,7 +143,11 @@ openSocket = (gameSocket, namespace) => {
     });
     socket.on("setReady", (isReady) => {
       //when client is ready, they will update this
-      console.log(`${players[index].player} is ready`);
+      logger.info("Player ready state changed", {
+        player: players[index].player,
+        isReady,
+        correlationId,
+      });
       players[index].isReady = isReady;
       updatePartyList();
       gameSocket.to(players[index].socket_id).emit("readyConfirm");
@@ -136,7 +156,7 @@ openSocket = (gameSocket, namespace) => {
     socket.on("updateSettings", (newSettings) => {
       if (socket.id !== partyLeader) return; // only leader can change settings
       settings = validateSettings(newSettings);
-      console.log("Settings updated:", settings);
+      logger.info("Settings updated", { settings, correlationId });
       gameSocket.emit("settingsUpdate", settings);
     });
 
@@ -147,7 +167,10 @@ openSocket = (gameSocket, namespace) => {
     });
 
     socket.on("disconnect", () => {
-      console.log("disconnected: " + socket.id);
+      logger.info("Socket disconnected", {
+        socketId: socket.id,
+        correlationId,
+      });
       players.map((x, index) => {
         if (x.socket_id == socket.id) {
           gameSocket.emit(
@@ -158,7 +181,10 @@ openSocket = (gameSocket, namespace) => {
           gameSocket.emit("g-addLog", "Sorry for the inconvenience (シ_ _)シ");
           players[index].player = "";
           if (socket.id === partyLeader) {
-            console.log("Leader has disconnected");
+            logger.warn("Party leader disconnected, destroying namespace", {
+              namespace,
+              correlationId,
+            });
             gameSocket.emit("leaderDisconnect", "leader_disconnected");
             socket.removeAllListeners();
             delete io.nsps[namespace];
@@ -168,7 +194,10 @@ openSocket = (gameSocket, namespace) => {
           }
         }
       });
-      console.log(Object.keys(gameSocket["sockets"]).length);
+      logger.debug("Remaining sockets in namespace", {
+        count: Object.keys(gameSocket["sockets"]).length,
+        correlationId,
+      });
       updatePartyList();
     });
   });
@@ -179,7 +208,7 @@ openSocket = (gameSocket, namespace) => {
         delete namespaces[namespace.substring(1)];
       }
       clearInterval(checkEmptyInterval);
-      console.log(namespace + "deleted");
+      logger.info("Empty namespace garbage-collected", { namespace });
     }
   }, 10000);
 };
@@ -200,5 +229,8 @@ app.get("*", (req, res) => {
 });
 
 server.listen(process.env.PORT || port, function () {
-  console.log(`listening on ${process.env.PORT || port}`);
+  logger.info("Server listening", {
+    port: process.env.PORT || port,
+    env: process.env.NODE_ENV ?? "development",
+  });
 });

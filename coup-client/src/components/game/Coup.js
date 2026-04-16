@@ -1,4 +1,5 @@
 import React, { Component } from "react";
+import logger from "../../utils/logger";
 import ActionDecision from "./ActionDecision";
 import ChallengeDecision from "./ChallengeDecision";
 import BlockChallengeDecision from "./BlockChallengeDecision";
@@ -41,10 +42,12 @@ export default class Coup extends Component {
       isDead: false,
       waiting: true,
       disconnected: false,
+      terminated: false,
       secondsLeft: null,
       sideNavTab: "command",
       coinAnims: [],
       glitchActive: false,
+      deckCount: null,
     };
     const bind = this;
 
@@ -63,20 +66,26 @@ export default class Coup extends Component {
     );
 
     this.props.socket.on("disconnect", (reason) => {
-      console.log("[COUP:CLIENT] disconnect", reason);
+      logger.socket.disconnected(reason);
+      if (this.state.terminated) return;
       this.setState({ disconnected: true });
     });
 
+    this.props.socket.on("g-terminated", () => {
+      this.setState({ terminated: true }, () => {
+        this.props.onTerminate?.();
+      });
+    });
+
     this.props.socket.on("g-gameOver", (winner) => {
-      console.log("[COUP:CLIENT] g-gameOver", winner);
+      logger.info("Game over", { winner });
       bind.setState({ winner: `${winner} Wins!` });
       bind.setState({ playAgain: bind.playAgainButton });
     });
     this.props.socket.on("g-updatePlayers", (players) => {
-      console.log("[COUP:CLIENT] g-updatePlayers count=", players.length);
+      logger.info("Players updated", { count: players.length });
       bind.setState({ playAgain: null });
       bind.setState({ winner: null });
-      players = players.filter((x) => !x.isDead);
       let playerIndex = null;
       for (let i = 0; i < players.length; i++) {
         if (players[i].name === this.props.name) {
@@ -84,28 +93,26 @@ export default class Coup extends Component {
           break;
         }
       }
-      if (playerIndex == null) {
-        this.setState({ isDead: true });
-      } else {
-        this.setState({ isDead: false });
-      }
-      console.log("[COUP:CLIENT] g-updatePlayers playerIndex=", playerIndex);
+      const myPlayer = playerIndex != null ? players[playerIndex] : null;
+      this.setState({ isDead: myPlayer?.isDead ?? true });
+      logger.debug("Player index resolved", {
+        playerIndex,
+        isDead: myPlayer?.isDead ?? true,
+      });
       bind.setState({ playerIndex, players });
     });
+    this.props.socket.on("g-updateDeckCount", (deckCount) => {
+      bind.setState({ deckCount });
+    });
     this.props.socket.on("g-updateCurrentPlayer", ({ name, timeLimit }) => {
-      console.log(
-        "[COUP:CLIENT] g-updateCurrentPlayer",
-        name,
-        "timeLimit=",
-        timeLimit
-      );
+      logger.info("Current player updated", { name, timeLimit });
       bind.setState({ currentPlayer: name });
       if (timeLimit > 0) {
         bind.startCountdown(timeLimit);
       }
     });
     this.props.socket.on("g-closeTurnTimer", () => {
-      console.log("[COUP:CLIENT] g-closeTurnTimer");
+      logger.debug("Turn timer closed");
       bind.stopCountdown();
     });
     this.props.socket.on("g-addLog", (log) => {
@@ -128,33 +135,30 @@ export default class Coup extends Component {
       bind.setState({ logs: bind.state.logs });
     });
     this.props.socket.on("g-chooseAction", () => {
-      console.log("[COUP:CLIENT] g-chooseAction — my turn");
+      logger.info("My turn — choose action");
       bind.setState({ isChooseAction: true });
     });
     this.props.socket.on("g-openExchange", ({ allInfluences, timeLimit }) => {
-      console.log(
-        "[COUP:CLIENT] g-openExchange",
-        allInfluences,
-        "timeLimit=",
-        timeLimit
-      );
+      logger.info("Exchange opened", {
+        influenceCount: allInfluences?.length,
+        timeLimit,
+      });
       bind.setState({ exchangeInfluence: allInfluences });
       bind.startCountdown(timeLimit);
     });
     this.props.socket.on("g-closeExchange", () => {
-      console.log("[COUP:CLIENT] g-closeExchange");
+      logger.debug("Exchange closed");
       bind.setState({ exchangeInfluence: null });
       bind.stopCountdown();
     });
 
     // Sequential challenge phase — server sends { action, timeLimit }
     this.props.socket.on("g-openChallenge", ({ action, timeLimit }) => {
-      console.log(
-        "[COUP:CLIENT] g-openChallenge",
-        action,
-        "timeLimit=",
-        timeLimit
-      );
+      logger.info("Challenge opened", {
+        source: action?.source,
+        type: action?.action,
+        timeLimit,
+      });
       if (this.state.isDead) return;
       if (action.source !== bind.props.name) {
         bind.setState({ action });
@@ -168,12 +172,10 @@ export default class Coup extends Component {
     this.props.socket.on(
       "g-openBlockChallenge",
       ({ counterAction, prevAction, timeLimit }) => {
-        console.log(
-          "[COUP:CLIENT] g-openBlockChallenge",
-          counterAction,
-          "timeLimit=",
-          timeLimit
-        );
+        logger.info("Block-challenge opened", {
+          source: counterAction?.source,
+          timeLimit,
+        });
         if (this.state.isDead) return;
         if (counterAction.source !== bind.props.name) {
           bind.setState({ blockChallengeRes: { counterAction, prevAction } });
@@ -186,7 +188,11 @@ export default class Coup extends Component {
     // For steal/assassinate: only the target receives this event.
     // For foreign_aid: all players except source receive it.
     this.props.socket.on("g-openBlock", ({ action, timeLimit }) => {
-      console.log("[COUP:CLIENT] g-openBlock", action, "timeLimit=", timeLimit);
+      logger.info("Block phase opened", {
+        source: action?.source,
+        type: action?.action,
+        timeLimit,
+      });
       if (this.state.isDead) return;
       if (action.source !== bind.props.name) {
         bind.setState({ blockingAction: action });
@@ -195,25 +201,25 @@ export default class Coup extends Component {
     });
 
     this.props.socket.on("g-chooseReveal", (res) => {
-      console.log("[COUP:CLIENT] g-chooseReveal", res);
+      logger.info("Must reveal influence", { res });
       bind.setState({ revealingRes: res });
     });
     this.props.socket.on("g-chooseInfluence", () => {
-      console.log("[COUP:CLIENT] g-chooseInfluence");
+      logger.info("Must choose influence to lose");
       bind.setState({ isChoosingInfluence: true });
     });
     this.props.socket.on("g-closeChallenge", () => {
-      console.log("[COUP:CLIENT] g-closeChallenge");
+      logger.debug("Challenge closed");
       bind.setState({ action: null });
       bind.stopCountdown();
     });
     this.props.socket.on("g-closeBlock", () => {
-      console.log("[COUP:CLIENT] g-closeBlock");
+      logger.debug("Block phase closed");
       bind.setState({ blockingAction: null });
       bind.stopCountdown();
     });
     this.props.socket.on("g-closeBlockChallenge", () => {
-      console.log("[COUP:CLIENT] g-closeBlockChallenge");
+      logger.debug("Block-challenge closed");
       bind.setState({ blockChallengeRes: null });
       bind.stopCountdown();
     });
@@ -288,14 +294,14 @@ export default class Coup extends Component {
         isChallenging: false,
         action: this.state.action,
       };
-      console.log("[COUP:CLIENT] emit g-challengeDecision (pass)", res);
+      logger.debug("Emit g-challengeDecision (pass)", { res });
       this.props.socket.emit("g-challengeDecision", res);
     } else if (this.state.blockChallengeRes != null) {
       //BlockChallengeDecision
       const res = {
         isChallenging: false,
       };
-      console.log("[COUP:CLIENT] emit g-blockChallengeDecision (pass)", res);
+      logger.debug("Emit g-blockChallengeDecision (pass)", { res });
       this.props.socket.emit("g-blockChallengeDecision", res);
     } else if (this.state.blockingAction !== null) {
       //BlockDecision
@@ -303,7 +309,7 @@ export default class Coup extends Component {
         action: this.state.blockingAction,
         isBlocking: false,
       };
-      console.log("[COUP:CLIENT] emit g-blockDecision (pass)", res);
+      logger.debug("Emit g-blockDecision (pass)", { res });
       this.props.socket.emit("g-blockDecision", res);
     }
     this.doneChallengeBlockingVote();
@@ -384,6 +390,12 @@ export default class Coup extends Component {
     }));
   };
 
+  terminateGame = () => {
+    this.props.socket.emit("g-terminatePlayer", {
+      playerName: this.props.name,
+    });
+  };
+
   render() {
     const {
       players,
@@ -405,6 +417,7 @@ export default class Coup extends Component {
       disconnected,
       coinAnims,
       glitchActive,
+      deckCount,
     } = this.state;
 
     const myPlayer = playerIndex != null ? players[playerIndex] : null;
@@ -470,6 +483,7 @@ export default class Coup extends Component {
             name={this.props.name}
             activeTab={sideNavTab}
             onTabChange={(tab) => this.setState({ sideNavTab: tab })}
+            onTerminate={this.terminateGame}
           />
 
           {/* Content area */}
@@ -498,9 +512,15 @@ export default class Coup extends Component {
                   players={opponents}
                   currentPlayer={currentPlayer}
                 />
-                <CentralDeck />
+                <CentralDeck deckCount={deckCount} />
                 <div id="coup-hand-area" style={{ display: "contents" }}>
-                  {myPlayer && <PlayerHand influences={myPlayer.influences} />}
+                  {myPlayer && (
+                    <PlayerHand
+                      influences={myPlayer.influences}
+                      revealedInfluences={myPlayer.revealedInfluences || []}
+                      isDead={!!myPlayer.isDead}
+                    />
+                  )}
                 </div>
 
                 {/* Waiting indicator */}
