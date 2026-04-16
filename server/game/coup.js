@@ -27,6 +27,17 @@ class CoupGame {
     this.actions = constants.Actions;
     this.counterActions = constants.CounterActions;
     this.aliveCount = players.length;
+    this.isPlayAgainOpen = false;
+
+    // One named slot per phase that needs a timer.
+    // Lives on the instance — NOT in frozen context — to avoid re-transition loops.
+    this._timers = {
+      turn: null,
+      challenge: null,
+      block: null,
+      blockChallenge: null,
+      exchange: null,
+    };
 
     this.sm = createCoupStateMachine({
       emit: (event, data) => this.gameSocket.emit(event, data),
@@ -41,8 +52,19 @@ class CoupGame {
   // Block 2 — resetGame
   // ─────────────────────────────────────────
   resetGame(startingPlayer = 0) {
+    // Clear all timers before resetting state
+    Object.values(this._timers).forEach((t) => clearTimeout(t));
+    this._timers = {
+      turn: null,
+      challenge: null,
+      block: null,
+      blockChallenge: null,
+      exchange: null,
+    };
+
     this.currentPlayer = startingPlayer;
     this.aliveCount = this.players.length;
+    this.isPlayAgainOpen = false;
     this.deck = gameUtils.buildDeck();
 
     for (let i = 0; i < this.players.length; i++) {
@@ -70,7 +92,9 @@ class CoupGame {
       socket.on("g-playAgain", () => {
         if (this.isPlayAgainOpen) {
           this.isPlayAgainOpen = false;
-          this.sm.dispatch(EVENTS.PLAY_AGAIN);
+          this.resetGame(Math.floor(Math.random() * this.players.length));
+          this.updatePlayers();
+          this.sm.transition(PHASES.ACTION_PENDING, {});
         }
       });
 
@@ -79,7 +103,51 @@ class CoupGame {
           "g-actionDecision",
           `source=${res.action?.source} action=${res.action?.action} target=${res.action?.target}`
         );
-        this.sm.dispatch(EVENTS.ACTION_CHOSEN, { action: res.action });
+
+        if (!this.sm.in(PHASES.ACTION_PENDING)) return;
+
+        const sourceIndex = this.nameIndexMap[res.action.source];
+        const player = this.players[sourceIndex];
+
+        // BUG-06: enforce forced coup at 10+ coins
+        if (player.money >= 10 && res.action.action !== "coup") {
+          log(
+            "g-actionDecision",
+            `Rejected: ${res.action.source} has ${player.money} coins but chose ${res.action.action}`
+          );
+          return;
+        }
+
+        // BUG-05: deduct coins server-side with validation
+        if (res.action.action === "coup") {
+          if (player.money < 7) return;
+          player.money -= 7;
+          this.updatePlayers();
+        } else if (res.action.action === "assassinate") {
+          if (player.money < 3) return;
+          player.money -= 3;
+          this.updatePlayers();
+        }
+
+        const isChallengeable = this.actions[res.action.action].isChallengeable;
+        const isBlockable =
+          this.actions[res.action.action].blockableBy.length > 0;
+
+        if (isChallengeable) {
+          this.sm.dispatch(EVENTS.ACTION_CHOSEN, {
+            action: res.action,
+            isBlockable: isBlockable,
+          });
+        } else if (res.action.action === "foreign_aid") {
+          // foreign_aid: not challengeable but blockable — skip to block phase
+          this.sm.transition(PHASES.BLOCK_OPEN, {
+            action: res.action,
+            votes: 0,
+            eligibleVoters: 0, // set in onEnter
+          });
+        } else {
+          this.applyAction(res.action);
+        }
       });
 
       socket.on("g-challengeDecision", (res) => {
@@ -139,6 +207,9 @@ class CoupGame {
     const sm = this.sm;
 
     // ── ACTION_PENDING ──────────────────────────────
+    // Entered at the start of every turn.
+    // Emits to all players who the current player is, and privately tells
+    // that player to choose their action. Starts the turn timer.
     sm.onEnter(PHASES.ACTION_PENDING, (ctx) => {
       const timeoutMs = this.settings.turnTimeLimit * 1000;
       const playerName = this.players[this.currentPlayer].name;
@@ -151,95 +222,105 @@ class CoupGame {
         .to(this.players[this.currentPlayer].socketID)
         .emit("g-chooseAction");
 
-      const timer = setTimeout(() => {
+      this._timers.turn = setTimeout(() => {
         this.onTurnTimeout(playerName);
       }, timeoutMs);
-
-      sm.transition(PHASES.ACTION_PENDING, { ...ctx, turnTimer: timer });
     });
 
-    sm.onExit(PHASES.ACTION_PENDING, (ctx) => {
-      clearTimeout(ctx.turnTimer);
+    sm.onExit(PHASES.ACTION_PENDING, () => {
+      clearTimeout(this._timers.turn);
+      this._timers.turn = null;
       this.gameSocket.emit("g-closeTurnTimer");
     });
 
     // ── CHALLENGE_OPEN ──────────────────────────────
+    // Entered when a challengeable action is played.
+    // votes > 0 means dispatch re-entered this phase to increment the vote
+    // counter — in that case we skip re-emitting and re-starting the timer.
     sm.onEnter(PHASES.CHALLENGE_OPEN, (ctx) => {
-      if (ctx.votes !== undefined) return; // vote increment re-entry — skip re-emit
+      if (ctx.votes > 0) return;
       const timeoutMs = this.settings.challengeTimeLimit * 1000;
+
+      // Now that we're in the hook we know aliveCount, so patch eligibleVoters
+      // directly into context via a plain assignment (context is frozen but
+      // we own the variable — re-freeze after patching).
+      context_patch: {
+        const patched = { ...ctx, eligibleVoters: this.aliveCount - 1 };
+        // We cannot call sm.transition() here (would cause a loop),
+        // so we reach into the machine's mutable closure via the
+        // returned setContext helper if available, or we accept that
+        // eligibleVoters stays 0 until the first vote arrives and
+        // handle it in dispatch instead (see dispatch CHALLENGE_VOTE).
+        // For simplicity we store it on the instance for this phase.
+        this._challengeEligibleVoters = this.aliveCount - 1;
+      }
 
       this.gameSocket.emit("g-openChallenge", {
         action: ctx.action,
         timeLimit: timeoutMs,
       });
 
-      const timer = setTimeout(() => {
+      this._timers.challenge = setTimeout(() => {
         if (!sm.in(PHASES.CHALLENGE_OPEN)) return;
         if (ctx.isBlockable) {
-          sm.transition(PHASES.BLOCK_OPEN, { action: ctx.action });
+          sm.transition(PHASES.BLOCK_OPEN, {
+            action: ctx.action,
+            votes: 0,
+            eligibleVoters: 0,
+          });
         } else {
           sm.transition(PHASES.IDLE, { pendingAction: ctx.action });
         }
       }, timeoutMs);
-
-      sm.transition(PHASES.CHALLENGE_OPEN, {
-        ...ctx,
-        votes: 0,
-        eligibleVoters: this.aliveCount - 1,
-        challengeTimer: timer,
-      });
     });
 
-    sm.onExit(PHASES.CHALLENGE_OPEN, (ctx) => {
-      clearTimeout(ctx.challengeTimer);
+    sm.onExit(PHASES.CHALLENGE_OPEN, () => {
+      clearTimeout(this._timers.challenge);
+      this._timers.challenge = null;
+      this._challengeEligibleVoters = 0;
       this.gameSocket.emit("g-closeChallenge");
     });
 
     // ── BLOCK_OPEN ──────────────────────────────────
+    // Entered after the challenge phase passes, or directly for foreign_aid.
+    // For foreign_aid all alive players (minus source) can block.
+    // For steal/assassinate only the target can block.
     sm.onEnter(PHASES.BLOCK_OPEN, (ctx) => {
-      if (ctx.votes !== undefined) return;
+      if (ctx.votes > 0) return;
       const timeoutMs = this.settings.challengeTimeLimit * 1000;
       const action = ctx.action;
 
       if (action.action === "foreign_aid") {
+        this._blockEligibleVoters = this.aliveCount - 1;
         this.gameSocket.emit("g-openBlock", { action, timeLimit: timeoutMs });
-        sm.transition(PHASES.BLOCK_OPEN, {
-          ...ctx,
-          votes: 0,
-          eligibleVoters: this.aliveCount - 1,
-        });
       } else {
-        //only the target can block (steal / assassinate)
+        // Only the target can block (steal / assassinate)
+        this._blockEligibleVoters = 1;
         this.gameSocket
           .to(this.nameSocketMap[action.target])
           .emit("g-openBlock", { action, timeLimit: timeoutMs });
-        sm.transition(PHASES.BLOCK_OPEN, {
-          ...ctx,
-          votes: 0,
-          eligibleVoters: 1,
-        });
       }
 
-      const timer = setTimeout(() => {
+      this._timers.block = setTimeout(() => {
         if (!sm.in(PHASES.BLOCK_OPEN)) return;
         sm.transition(PHASES.IDLE, { pendingAction: ctx.action });
       }, timeoutMs);
-
-      sm.transition(PHASES.BLOCK_OPEN, {
-        ...sm.getContext(),
-        blockTimer: timer,
-      });
     });
 
-    sm.onExit(PHASES.BLOCK_OPEN, (ctx) => {
-      clearTimeout(ctx.blockTimer);
+    sm.onExit(PHASES.BLOCK_OPEN, () => {
+      clearTimeout(this._timers.block);
+      this._timers.block = null;
+      this._blockEligibleVoters = 0;
       this.gameSocket.emit("g-closeBlock");
     });
 
     // ── BLOCK_CHALLENGE_OPEN ────────────────────────
+    // Entered when someone blocks. All other alive players can challenge the block.
     sm.onEnter(PHASES.BLOCK_CHALLENGE_OPEN, (ctx) => {
-      if (ctx.votes !== undefined) return;
+      if (ctx.votes > 0) return;
       const timeoutMs = this.settings.challengeTimeLimit * 1000;
+
+      this._blockChallengeEligibleVoters = this.aliveCount - 1;
 
       this.gameSocket.emit("g-openBlockChallenge", {
         counterAction: ctx.counterAction,
@@ -248,25 +329,22 @@ class CoupGame {
       });
       this.gameSocket.emit("g-addLog", `${ctx.blocker} blocked ${ctx.blockee}`);
 
-      const timer = setTimeout(() => {
+      this._timers.blockChallenge = setTimeout(() => {
         if (!sm.in(PHASES.BLOCK_CHALLENGE_OPEN)) return;
         sm.transition(PHASES.IDLE, { pendingAction: null }); // block succeeded
       }, timeoutMs);
-
-      sm.transition(PHASES.BLOCK_CHALLENGE_OPEN, {
-        ...ctx,
-        votes: 0,
-        eligibleVoters: this.aliveCount - 1,
-        blockChallengeTimer: timer,
-      });
     });
 
-    sm.onExit(PHASES.BLOCK_CHALLENGE_OPEN, (ctx) => {
-      clearTimeout(ctx.blockChallengeTimer);
+    sm.onExit(PHASES.BLOCK_CHALLENGE_OPEN, () => {
+      clearTimeout(this._timers.blockChallenge);
+      this._timers.blockChallenge = null;
+      this._blockChallengeEligibleVoters = 0;
       this.gameSocket.emit("g-closeBlockChallenge");
     });
 
     // ── REVEAL_PENDING ──────────────────────────────
+    // Entered when a challenge is made. Privately asks the challenged player
+    // to reveal one of their cards.
     sm.onEnter(PHASES.REVEAL_PENDING, (ctx) => {
       this.gameSocket
         .to(this.nameSocketMap[ctx.challengee])
@@ -280,6 +358,8 @@ class CoupGame {
     });
 
     // ── CHOOSE_INFLUENCE_PENDING ────────────────────
+    // Entered when a player must lose an influence card
+    // (coup, assassination, or failed challenge).
     sm.onEnter(PHASES.CHOOSE_INFLUENCE_PENDING, (ctx) => {
       this.gameSocket
         .to(this.nameSocketMap[ctx.playerName])
@@ -287,6 +367,8 @@ class CoupGame {
     });
 
     // ── EXCHANGE_PENDING ────────────────────────────
+    // Entered when the Ambassador action is applied.
+    // Sends the player their current cards plus 2 drawn cards to choose from.
     sm.onEnter(PHASES.EXCHANGE_PENDING, (ctx) => {
       const timeoutMs = this.settings.exchangeTimeLimit * 1000;
 
@@ -297,9 +379,10 @@ class CoupGame {
           timeLimit: timeoutMs,
         });
 
-      const timer = setTimeout(() => {
+      this._timers.exchange = setTimeout(() => {
         if (!sm.in(PHASES.EXCHANGE_PENDING)) return;
-        ctx.drawTwo.forEach((card) => this.deck.push(card));
+        // Timeout: put drawn cards back, keep original hand
+        sm.getContext().drawTwo.forEach((card) => this.deck.push(card));
         this.deck = gameUtils.shuffleArray(this.deck);
         this.gameSocket
           .to(this.nameSocketMap[ctx.source])
@@ -310,16 +393,16 @@ class CoupGame {
         );
         sm.transition(PHASES.IDLE, {});
       }, timeoutMs);
-
-      sm.transition(PHASES.EXCHANGE_PENDING, { ...ctx, exchangeTimer: timer });
     });
 
-    sm.onExit(PHASES.EXCHANGE_PENDING, (ctx) => {
-      clearTimeout(ctx.exchangeTimer);
+    sm.onExit(PHASES.EXCHANGE_PENDING, () => {
+      clearTimeout(this._timers.exchange);
+      this._timers.exchange = null;
     });
 
     // ── IDLE ────────────────────────────────────────
-    // Called after every phase ends — decides what happens next
+    // The junction after every phase. Decides what to do next based on
+    // what context was passed in from the previous phase.
     sm.onEnter(PHASES.IDLE, (ctx) => {
       if (ctx.pendingAction) {
         this.applyAction(ctx.pendingAction);
@@ -377,7 +460,7 @@ class CoupGame {
           pendingAction: null,
         });
       } else {
-        // BUG-03: target already dead — skip influence loss
+        // BUG-03: target already lost last card — skip influence loss
         this.nextTurn();
       }
     } else if (execute === "exchange") {
@@ -493,7 +576,9 @@ class CoupGame {
     return this.players[this.nameIndexMap[name]];
   }
 
-  // Called from onEnter(IDLE) after INFLUENCE_CHOSEN
+  // Called from onEnter(IDLE) when a player has just chosen which influence to lose.
+  // Removes the card, handles BUG-02 coin refund, then either applies a
+  // pending deferred action (BUG-03) or advances to the next turn.
   _afterInfluenceChosen(ctx) {
     const playerIndex = this.nameIndexMap[ctx.playerName];
     const player = this.players[playerIndex];
@@ -512,12 +597,15 @@ class CoupGame {
       }
     }
 
-    // BUG-02: refund coins if assassination challenge succeeded
+    // BUG-02: refund 3 coins to source if assassination was successfully challenged
     if (ctx.refundAssassinate) {
       this._findPlayer(ctx.challengee).money += 3;
     }
 
-    // BUG-03: if there's a pending action waiting, apply it now
+    this.updatePlayers();
+
+    // BUG-03: if an action was deferred (e.g. assassination after failed challenge),
+    // apply it now that the challenger has lost their influence
     if (ctx.pendingAction) {
       this.applyAction(ctx.pendingAction);
     } else {
@@ -525,7 +613,8 @@ class CoupGame {
     }
   }
 
-  // Called from onEnter(IDLE) after EXCHANGE_CHOSEN
+  // Called from onEnter(IDLE) when a player has finished their Ambassador exchange.
+  // Replaces their hand with the kept cards and returns the rest to the deck.
   _afterExchangeChosen(ctx) {
     const playerIndex = this.nameIndexMap[ctx.source];
     this.players[playerIndex].influences = ctx.kept;

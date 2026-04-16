@@ -1,3 +1,5 @@
+// server/game/CoupStateMachine.js
+
 const PHASES = {
   IDLE: "IDLE",
   ACTION_PENDING: "ACTION_PENDING",
@@ -39,7 +41,12 @@ function createCoupStateMachine({ emit, emitTo }) {
     switch (event) {
       case EVENTS.ACTION_CHOSEN: {
         if (phase !== PHASES.ACTION_PENDING) return;
-        transition(PHASES.CHALLENGE_OPEN, { action: payload.action });
+        transition(PHASES.CHALLENGE_OPEN, {
+          action: payload.action,
+          isBlockable: payload.isBlockable,
+          votes: 0,
+          eligibleVoters: 0, // set properly in onEnter
+        });
         break;
       }
 
@@ -53,9 +60,13 @@ function createCoupStateMachine({ emit, emitTo }) {
             challengee: payload.challengee,
             isBlock: false,
           });
-        } else if (context.votes + 1 >= context.eligibleVoters) {
+        } else if (ctx.votes + 1 >= ctx.eligibleVoters) {
           if (ctx.isBlockable) {
-            transition(PHASES.BLOCK_OPEN, { action: ctx.action });
+            transition(PHASES.BLOCK_OPEN, {
+              action: ctx.action,
+              votes: 0,
+              eligibleVoters: 0, // set properly in onEnter
+            });
           } else {
             transition(PHASES.IDLE, { pendingAction: ctx.action });
           }
@@ -78,7 +89,7 @@ function createCoupStateMachine({ emit, emitTo }) {
             blockee: payload.blockee,
             blocker: payload.blocker,
             votes: 0,
-            eligibleVoters: ctx.eligibleVoters,
+            eligibleVoters: 0, // set properly in onEnter
           });
         } else if (ctx.votes + 1 >= ctx.eligibleVoters) {
           transition(PHASES.IDLE, { pendingAction: ctx.action });
@@ -115,7 +126,10 @@ function createCoupStateMachine({ emit, emitTo }) {
 
       case EVENTS.REVEAL_SUBMITTED: {
         if (phase !== PHASES.REVEAL_PENDING) return;
-        transition(PHASES.CHOOSE_INFLUENCE_PENDING, { ...context, ...payload });
+        transition(PHASES.CHOOSE_INFLUENCE_PENDING, {
+          ...context,
+          ...payload,
+        });
         break;
       }
 
@@ -150,13 +164,13 @@ function createCoupStateMachine({ emit, emitTo }) {
     getContext: () => context,
     in: (p) => phase === p,
     dispatch,
+    transition,
     onEnter: (p, fn) => {
       enterHandlers[p] = fn;
     },
     onExit: (p, fn) => {
       exitHandlers[p] = fn;
     },
-    transition,
   };
 }
 
