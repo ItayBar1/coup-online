@@ -1,6 +1,7 @@
 services:
   coup:
     image: ghcr.io/itaybar1/coup-online:${IMAGE_TAG:-latest}
+    container_name: coup-app
     build:
       context: .
       dockerfile: Dockerfile
