@@ -14,20 +14,36 @@ services:
       NODE_ENV: production
       LOG_LEVEL: ${LOG_LEVEL:-info}
     restart: unless-stopped
+    networks:
+      - coup-net
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8000/"]
       interval: 30s
       timeout: 5s
       retries: 3
 
-  # Watchtower: auto-pulls new images from GHCR every 5 minutes.
-  # Requires Docker to be logged in to GHCR on the host:
-  #   echo $GHCR_PAT | docker login ghcr.io -u <github-username> --password-stdin
+  # Cloudflare Tunnel: חיבור מאובטח לעולם ללא פתיחת פורטים
+  coup-tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: coup-tunnel
+    command: tunnel --no-autoupdate run --token ${COUP_TUNNEL_TOKEN}
+    restart: unless-stopped
+    networks:
+      - coup-net
+
+  # Watchtower: עדכון אוטומטי של האימג'ים
   watchtower:
     image: containrrr/watchtower:latest
+    container_name: coup-watchtower
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOME}/.docker/config.json:/config.json:ro
-    # Watch only the 'coup' container, poll every 5 minutes
-    command: --interval 300 coup
+    # מעקב אחרי קונטיינר האפליקציה בלבד
+    command: --interval 300 coup-app
     restart: unless-stopped
+    networks:
+      - coup-net
+
+networks:
+  coup-net:
+    driver: bridge
