@@ -1,5 +1,5 @@
 import React, { Component } from "react";
-import { Link } from "react-router-dom";
+import { Link, Navigate } from "react-router-dom";
 import io from "socket.io-client";
 import { ReactSortable } from "react-sortablejs";
 import Coup from "./game/Coup";
@@ -30,6 +30,7 @@ export default class CreateGame extends Component {
       players: [],
       isError: false,
       isGameStarted: false,
+      navigateHome: false,
       errorMsg: "",
       canStart: false,
       socket: null,
@@ -168,6 +169,10 @@ export default class CreateGame extends Component {
   };
 
   render() {
+    if (this.state.navigateHome) {
+      return <Navigate to="/" replace />;
+    }
+
     if (this.state.isGameStarted) {
       return (
         <Coup
@@ -175,15 +180,7 @@ export default class CreateGame extends Component {
           socket={this.state.socket}
           onTerminate={() => {
             this.state.socket?.disconnect();
-            this.setState({
-              isGameStarted: false,
-              isInRoom: false,
-              isLeader: false,
-              canStart: false,
-              roomCode: "",
-              players: [],
-              socket: null,
-            });
+            this.setState({ navigateHome: true });
           }}
         />
       );

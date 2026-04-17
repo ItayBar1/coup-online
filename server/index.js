@@ -214,12 +214,11 @@ openSocket = (gameSocket, namespace) => {
 };
 
 startGame = (players, gameSocket, namespace, settings) => {
-  namespaces[namespace.substring(1)] = new CoupGame(
-    players,
-    gameSocket,
-    settings
-  );
-  namespaces[namespace.substring(1)].start();
+  const game = new CoupGame(players, gameSocket, settings);
+  namespaces[namespace.substring(1)] = game;
+  // Delay start so clients have time to mount their game components
+  // and register socket listeners before the first turn events arrive.
+  setTimeout(() => game.start(), 300);
 };
 
 const clientDist = path.join(__dirname, "../coup-client/dist");

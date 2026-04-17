@@ -707,3 +707,62 @@ describe("CoupGame — single-card target auto-loses without choose dialog", () 
     expect(game.nextTurn).not.toHaveBeenCalled();
   });
 });
+
+// ── Bug: terminate does not notify other players ──────────────────────────────
+
+describe("CoupGame — terminate notifies other players", () => {
+  test("g-terminatePlayer emits g-updatePlayers so other players see the change", () => {
+    const { game, gameSocket, playerSockets } = buildGame([
+      "Alice",
+      "Bob",
+      "Carol",
+    ]);
+    const aliceSock = playerSockets["sock-0"];
+
+    game.players[0].influences = ["duke"];
+    game.players[0].isDead = false;
+    game.aliveCount = 3;
+
+    const before = gameSocket._emitted.filter(
+      (e) => e.event === "g-updatePlayers"
+    ).length;
+
+    aliceSock._trigger("g-terminatePlayer", { playerName: "Alice" });
+
+    const after = gameSocket._emitted.filter(
+      (e) => e.event === "g-updatePlayers"
+    ).length;
+    expect(after).toBeGreaterThan(before);
+  });
+
+  test("g-terminatePlayer emits a log message mentioning the player", () => {
+    const { game, gameSocket, playerSockets } = buildGame(["Alice", "Bob"]);
+    const aliceSock = playerSockets["sock-0"];
+
+    game.players[0].influences = ["duke"];
+    game.players[0].isDead = false;
+    game.aliveCount = 2;
+
+    aliceSock._trigger("g-terminatePlayer", { playerName: "Alice" });
+
+    const logs = gameSocket._emitted.filter((e) => e.event === "g-addLog");
+    expect(logs.some((e) => e.args[0].includes("Alice"))).toBe(true);
+  });
+
+  test("g-terminatePlayer in 2-player game: surviving player wins (g-gameOver emitted)", () => {
+    const { game, gameSocket, playerSockets } = buildGame(["Alice", "Bob"]);
+    const aliceSock = playerSockets["sock-0"];
+
+    game.players[0].influences = ["duke"];
+    game.players[0].isDead = false;
+    game.players[1].influences = ["captain"];
+    game.players[1].isDead = false;
+    game.aliveCount = 2;
+
+    aliceSock._trigger("g-terminatePlayer", { playerName: "Alice" });
+
+    const gameOver = gameSocket._emitted.find((e) => e.event === "g-gameOver");
+    expect(gameOver).toBeTruthy();
+    expect(gameOver.args[0]).toBe("Bob");
+  });
+});
