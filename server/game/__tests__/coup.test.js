@@ -117,6 +117,24 @@ afterEach(() => {
 
 // ── TESTS ─────────────────────────────────────────────────────────────────────
 
+describe("CoupGame — 2-player starting coins", () => {
+  test("first player to act starts with 1 coin", () => {
+    const { game } = buildGameWithRealSM(["Alice", "Bob"]);
+    expect(game.players[game.currentPlayer].money).toBe(1);
+  });
+
+  test("second player starts with 2 coins", () => {
+    const { game } = buildGameWithRealSM(["Alice", "Bob"]);
+    const otherIdx = (game.currentPlayer + 1) % 2;
+    expect(game.players[otherIdx].money).toBe(2);
+  });
+
+  test("all players start with 2 coins in 3-player game", () => {
+    const { game } = buildGameWithRealSM(["Alice", "Bob", "Charlie"]);
+    game.players.forEach((p) => expect(p.money).toBe(2));
+  });
+});
+
 describe("CoupGame — coin validation", () => {
   test("coup rejected when player has fewer than 7 coins", () => {
     const { game, playerSockets } = buildGame(["Alice", "Bob"]);

@@ -52,9 +52,11 @@ class CoupGame {
       this.players[i].missedTurns = 0;
     }
 
-    // BUG-04: in a 2-player game the starting player gets only 1 coin
+    // In a 2-player game, the first player to act gets only 1 coin.
+    // nextTurn() increments currentPlayer once before the first action,
+    // so the actual first player is at (startingPlayer + 1) % 2.
     if (this.players.length === 2) {
-      this.players[startingPlayer].money = 1;
+      this.players[(startingPlayer + 1) % this.players.length].money = 1;
     }
 
     this.sm.transition(PHASES.IDLE, {});
