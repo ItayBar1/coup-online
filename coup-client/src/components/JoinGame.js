@@ -1,5 +1,5 @@
 import React, { Component } from "react";
-import { Link } from "react-router-dom";
+import { Link, Navigate } from "react-router-dom";
 import io from "socket.io-client";
 import Coup from "./game/Coup";
 import LandingBackground from "./shared/LandingBackground";
@@ -13,7 +13,7 @@ export default class JoinGame extends Component {
     super(props);
 
     const params = new URLSearchParams(window.location.search);
-    const codeFromUrl = params.get("code") || "";
+    const codeFromUrl = (params.get("code") || "").toUpperCase();
 
     this.state = {
       name: "",
@@ -24,6 +24,7 @@ export default class JoinGame extends Component {
       isLoading: false,
       isError: false,
       isGameStarted: false,
+      navigateHome: false,
       errorMsg: "",
       socket: null,
       settings: {
@@ -40,7 +41,7 @@ export default class JoinGame extends Component {
   };
 
   onCodeChange = (roomCode) => {
-    this.setState({ roomCode });
+    this.setState({ roomCode: roomCode.toUpperCase() });
   };
 
   joinParty = () => {
@@ -142,6 +143,10 @@ export default class JoinGame extends Component {
   };
 
   render() {
+    if (this.state.navigateHome) {
+      return <Navigate to="/" replace />;
+    }
+
     if (this.state.isGameStarted) {
       return (
         <Coup
@@ -149,13 +154,7 @@ export default class JoinGame extends Component {
           socket={this.state.socket}
           onTerminate={() => {
             this.state.socket?.disconnect();
-            this.setState({
-              isGameStarted: false,
-              isInRoom: false,
-              isReady: false,
-              players: [],
-              socket: null,
-            });
+            this.setState({ navigateHome: true });
           }}
         />
       );

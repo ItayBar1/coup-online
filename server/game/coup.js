@@ -114,7 +114,21 @@ class CoupGame {
         ];
         player.influences = [];
         player.isDead = true;
+        this.aliveCount -= 1;
+        this.gameSocket.emit("g-addLog", `${res.playerName} has left the game`);
         this.gameSocket.to(player.socketID).emit("g-terminated");
+        this.updatePlayers();
+
+        if (this.aliveCount <= 1) {
+          const winner = this.players.find((p) => p.influences.length > 0);
+          if (winner) {
+            this.isPlayAgainOpen = true;
+            this.gameSocket.emit("g-gameOver", winner.name);
+            this.sm.transition(PHASES.GAME_OVER, { winner: winner.name });
+          }
+        } else if (playerIdx === this.currentPlayer) {
+          this.sm.transition(PHASES.IDLE, {});
+        }
       });
 
       socket.on("g-blockDecision", (res) => {
