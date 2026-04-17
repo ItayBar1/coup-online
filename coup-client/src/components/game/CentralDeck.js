@@ -3,7 +3,7 @@ import "../../styles/sovereign-ledger.css";
 
 export default function CentralDeck({ deckCount }) {
   return (
-    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+    <div className="absolute inset-x-0 top-0 bottom-40 flex items-center justify-center pointer-events-none">
       <div className="relative flex flex-col items-center gap-4">
         {/* Ambient glow */}
         <div className="absolute inset-0 bg-primary/5 blur-3xl rounded-full pointer-events-none" />

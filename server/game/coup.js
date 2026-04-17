@@ -79,7 +79,14 @@ class CoupGame {
           "g-actionDecision",
           `source=${res.action?.source} action=${res.action?.action} target=${res.action?.target}`
         );
-        this.sm.dispatch(EVENTS.ACTION_CHOSEN, { action: res.action });
+        const actionDef = this.actions[res.action?.action];
+        const isChallengeable = actionDef?.isChallengeable ?? false;
+        const isBlockable = (actionDef?.blockableBy?.length ?? 0) > 0;
+        this.sm.dispatch(EVENTS.ACTION_CHOSEN, {
+          action: res.action,
+          isChallengeable,
+          isBlockable,
+        });
       });
 
       socket.on("g-challengeDecision", (res) => {
@@ -131,7 +138,8 @@ class CoupGame {
           "g-revealDecision",
           `challengee=${res.challengee} challenger=${res.challenger} revealedCard=${res.revealedCard} isBlock=${res.isBlock}`
         );
-        this.sm.dispatch(EVENTS.REVEAL_SUBMITTED, res);
+        if (!this.sm.in(PHASES.REVEAL_PENDING)) return;
+        this._resolveReveal(res);
       });
 
       socket.on("g-chooseInfluenceDecision", (res) => {
@@ -381,19 +389,30 @@ class CoupGame {
       this._findPlayer(source).money += stolen;
       this.nextTurn();
     } else if (execute === "coup") {
-      this.sm.transition(PHASES.CHOOSE_INFLUENCE_PENDING, {
-        playerName: target,
-        pendingAction: null,
-      });
+      const t = this._findPlayer(target);
+      if (t.influences.length === 1) {
+        t.revealedInfluences.push(t.influences[0]);
+        t.influences = [];
+        this.nextTurn();
+      } else {
+        this.sm.transition(PHASES.CHOOSE_INFLUENCE_PENDING, {
+          playerName: target,
+          pendingAction: null,
+        });
+      }
     } else if (execute === "assassinate") {
       const t = this._findPlayer(target);
-      if (t.influences.length > 0) {
+      if (t.influences.length === 1) {
+        t.revealedInfluences.push(t.influences[0]);
+        t.influences = [];
+        this.nextTurn();
+      } else if (t.influences.length > 1) {
         this.sm.transition(PHASES.CHOOSE_INFLUENCE_PENDING, {
           playerName: target,
           pendingAction: null,
         });
       } else {
-        // BUG-03: target already dead — skip influence loss
+        // target already dead — skip influence loss
         this.nextTurn();
       }
     } else if (execute === "exchange") {
@@ -521,8 +540,7 @@ class CoupGame {
 
     for (let i = 0; i < player.influences.length; i++) {
       if (player.influences[i] === ctx.chosenInfluence) {
-        this.deck.push(player.influences[i]);
-        this.deck = gameUtils.shuffleArray(this.deck);
+        player.revealedInfluences.push(player.influences[i]);
         player.influences.splice(i, 1);
         break;
       }
@@ -576,6 +594,147 @@ class CoupGame {
       } else {
         this.isChooseInfluenceOpen = true;
         this.pendingInfluencePlayerIndex = challengeeIdx;
+      }
+    }
+  }
+
+  // Resolves a challenge after the challengee reveals a card.
+  // Called directly from the g-revealDecision socket handler (replaces REVEAL_SUBMITTED dispatch).
+  _resolveReveal(res) {
+    const {
+      revealedCard,
+      challenger,
+      challengee,
+      isBlock,
+      prevAction,
+      counterAction,
+    } = res;
+
+    const challengerPlayer = this._findPlayer(challenger);
+    const challengeePlayer = this._findPlayer(challengee);
+    if (!challengerPlayer || !challengeePlayer) return;
+
+    // Determine which card(s) would prove the claim
+    let claimedCards;
+    if (isBlock) {
+      const blockActionName = counterAction?.counterAction;
+      claimedCards = this.counterActions[blockActionName]?.influences || [];
+    } else {
+      const actionName = prevAction?.action;
+      const influence = actionName ? this.actions[actionName]?.influence : null;
+      claimedCards = influence && influence !== "all" ? [influence] : [];
+    }
+
+    const claimProven = claimedCards.includes(revealedCard);
+
+    log(
+      "_resolveReveal",
+      `challengee=${challengee} revealedCard=${revealedCard} claimProven=${claimProven}`
+    );
+    this.gameSocket.emit(
+      "g-addLog",
+      `${challengee} revealed ${revealedCard} — ${claimProven ? "claim proven" : "bluff called"}`
+    );
+
+    if (claimProven) {
+      // Challengee proved their card → replace their card with a fresh one from deck
+      const cardIdx = challengeePlayer.influences.indexOf(revealedCard);
+      if (cardIdx !== -1 && this.deck.length > 0) {
+        this.deck.push(challengeePlayer.influences[cardIdx]);
+        this.deck = gameUtils.shuffleArray(this.deck);
+        challengeePlayer.influences[cardIdx] = this.deck.pop();
+      }
+
+      // Special case: assassination target challenged the assassin and lost.
+      // The target faces both the failed-challenge penalty AND the assassination → lose all cards.
+      const isAssassinTarget =
+        !isBlock &&
+        prevAction?.action === "assassinate" &&
+        prevAction?.target === challenger;
+
+      if (isAssassinTarget && challengerPlayer.influences.length > 0) {
+        challengerPlayer.revealedInfluences.push(
+          ...challengerPlayer.influences
+        );
+        challengerPlayer.influences = [];
+        this.gameSocket.emit(
+          "g-addLog",
+          `${challenger} loses all influences (failed challenge + assassination)`
+        );
+        this.updatePlayers();
+        this.nextTurn();
+        return;
+      }
+
+      // Normal failed-challenge: challenger loses one influence
+      // After that, the pending action (if any) still applies
+      const pendingAction = isBlock ? null : prevAction;
+
+      if (challengerPlayer.influences.length <= 1) {
+        if (challengerPlayer.influences.length === 1) {
+          challengerPlayer.revealedInfluences.push(
+            challengerPlayer.influences[0]
+          );
+          challengerPlayer.influences = [];
+        }
+        this.updatePlayers();
+        if (pendingAction) {
+          this.sm.transition(PHASES.IDLE, { pendingAction });
+        } else {
+          this.sm.transition(PHASES.IDLE, {});
+        }
+      } else {
+        this.sm.transition(PHASES.CHOOSE_INFLUENCE_PENDING, {
+          playerName: challenger,
+          pendingAction,
+        });
+      }
+    } else {
+      // Challengee was bluffing → challengee loses one influence
+      // If it was a block that was bluffed: the original action still proceeds
+      const pendingAction = isBlock ? prevAction : null;
+
+      // Special case: assassination target bluffed the contessa block → loses all cards.
+      const isAssassinTargetBlockBluff =
+        isBlock &&
+        prevAction?.action === "assassinate" &&
+        prevAction?.target === challengee;
+
+      if (
+        isAssassinTargetBlockBluff &&
+        challengeePlayer.influences.length > 0
+      ) {
+        challengeePlayer.revealedInfluences.push(
+          ...challengeePlayer.influences
+        );
+        challengeePlayer.influences = [];
+        this.gameSocket.emit(
+          "g-addLog",
+          `${challengee} loses all influences (failed contessa block + assassination)`
+        );
+        this.updatePlayers();
+        this.nextTurn();
+        return;
+      }
+
+      if (challengeePlayer.influences.length <= 1) {
+        if (challengeePlayer.influences.length === 1) {
+          challengeePlayer.revealedInfluences.push(
+            challengeePlayer.influences[0]
+          );
+          challengeePlayer.influences = [];
+        }
+        this.updatePlayers();
+        if (pendingAction) {
+          this.sm.transition(PHASES.IDLE, { pendingAction });
+        } else {
+          this.sm.transition(PHASES.IDLE, {});
+        }
+      } else {
+        this.sm.transition(PHASES.CHOOSE_INFLUENCE_PENDING, {
+          playerName: challengee,
+          pendingAction,
+        });
       }
     }
   }
