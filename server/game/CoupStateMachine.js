@@ -29,7 +29,8 @@ function createCoupStateMachine({ emit, emitTo }) {
   const exitHandlers = {};
 
   function transition(toPhase, newContext = {}) {
-    if (exitHandlers[phase]) exitHandlers[phase](context);
+    // Only fire exit when actually leaving the current phase
+    if (phase !== toPhase && exitHandlers[phase]) exitHandlers[phase](context);
     phase = toPhase;
     context = Object.freeze({ ...newContext });
     if (enterHandlers[phase]) enterHandlers[phase](context);
@@ -39,7 +40,14 @@ function createCoupStateMachine({ emit, emitTo }) {
     switch (event) {
       case EVENTS.ACTION_CHOSEN: {
         if (phase !== PHASES.ACTION_PENDING) return;
-        transition(PHASES.CHALLENGE_OPEN, { action: payload.action });
+        const { action, isChallengeable, isBlockable } = payload;
+        if (isChallengeable) {
+          transition(PHASES.CHALLENGE_OPEN, { action, isBlockable });
+        } else if (isBlockable) {
+          transition(PHASES.BLOCK_OPEN, { action });
+        } else {
+          transition(PHASES.IDLE, { pendingAction: action });
+        }
         break;
       }
 

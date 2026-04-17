@@ -1,4 +1,5 @@
 const CoupGame = require("../coup");
+const { PHASES } = require("../CoupStateMachine");
 
 // ── Socket mock helpers ───────────────────────────────────────────────────────
 
@@ -69,6 +70,7 @@ function buildGame(playerNames) {
   sm.onExit = () => {};
 
   game.resetGame();
+  game.listen();
 
   return { game, gameSocket, playerSockets };
 }
@@ -81,6 +83,25 @@ function lastEmit(socket, eventName) {
 
 function lastToEmit(socket, eventName) {
   return socket._toEmitted.filter((e) => e.event === eventName).pop();
+}
+
+// ── buildGame with REAL state machine (no stubs) ─────────────────────────────
+
+function buildGameWithRealSM(playerNames) {
+  const gameSocket = makeSocketMock();
+  const playerSockets = {};
+  playerNames.forEach((name, i) => {
+    playerSockets[`sock-${i}`] = makeSocketMock();
+  });
+  gameSocket.sockets = playerSockets;
+
+  const players = makePlayers(playerNames);
+  const game = new CoupGame(players, gameSocket);
+
+  game.resetGame();
+  game.listen();
+
+  return { game, gameSocket, playerSockets };
 }
 
 // ── Timer setup ───────────────────────────────────────────────────────────────
@@ -364,5 +385,325 @@ describe("CoupGame — new terminate/challenge edge cases", () => {
 
     expect(game.isChooseInfluenceOpen).toBe(true);
     expect(game.pendingInfluencePlayerIndex).toBe(0);
+  });
+});
+
+// ── Bug 1: challenge window must stay open ────────────────────────────────────
+
+describe("CoupGame — Bug 1: challenge window stays open", () => {
+  test("g-openChallenge emitted and g-closeChallenge NOT emitted after challengeable action", () => {
+    const { game, gameSocket, playerSockets } = buildGameWithRealSM([
+      "Alice",
+      "Bob",
+    ]);
+
+    const actorIdx = game.currentPlayer;
+    const actorSock = playerSockets[game.players[actorIdx].socketID];
+    const actorName = game.players[actorIdx].name;
+
+    actorSock._trigger("g-actionDecision", {
+      action: { action: "tax", source: actorName, target: null },
+    });
+
+    expect(lastEmit(gameSocket, "g-openChallenge")).toBeTruthy();
+    // Bug: without fix, g-closeChallenge is emitted immediately after g-openChallenge
+    expect(lastEmit(gameSocket, "g-closeChallenge")).toBeFalsy();
+  });
+
+  test("income does NOT open challenge window", () => {
+    const { game, gameSocket, playerSockets } = buildGameWithRealSM([
+      "Alice",
+      "Bob",
+    ]);
+
+    const actorIdx = game.currentPlayer;
+    const actorSock = playerSockets[game.players[actorIdx].socketID];
+    const actorName = game.players[actorIdx].name;
+
+    actorSock._trigger("g-actionDecision", {
+      action: { action: "income", source: actorName, target: null },
+    });
+
+    expect(lastEmit(gameSocket, "g-openChallenge")).toBeFalsy();
+  });
+});
+
+// ── Bug 3: _afterInfluenceChosen must add to revealedInfluences ───────────────
+
+describe("CoupGame — Bug 3: influence shown as revealed after loss", () => {
+  test("chosen influence moved to revealedInfluences, not lost silently", () => {
+    const { game } = buildGame(["Alice", "Bob"]);
+
+    game.players[1].influences = ["captain", "duke"];
+    game.players[1].revealedInfluences = [];
+
+    // Stub sm.transition to prevent IDLE re-entry effects
+    game.sm.transition = jest.fn();
+
+    game._afterInfluenceChosen({
+      playerName: "Bob",
+      chosenInfluence: "captain",
+      pendingAction: null,
+    });
+
+    expect(game.players[1].influences).not.toContain("captain");
+    expect(game.players[1].revealedInfluences).toContain("captain");
+  });
+});
+
+// ── Bug 3+4: _resolveReveal challenge resolution ──────────────────────────────
+
+describe("CoupGame — _resolveReveal", () => {
+  function buildResolveGame() {
+    const { game, gameSocket } = buildGame(["Alice", "Bob"]);
+    game.players[0].influences = ["duke", "captain"];
+    game.players[0].revealedInfluences = [];
+    game.players[1].influences = ["captain"];
+    game.players[1].revealedInfluences = [];
+    game.sm.transition = jest.fn();
+    game.nextTurn = jest.fn();
+    return { game, gameSocket };
+  }
+
+  test("claim proven, challenger has 1 card → auto-lose, pending action proceeds", () => {
+    const { game } = buildResolveGame();
+    // Alice claimed tax (duke), Bob challenged, Alice reveals duke (proven)
+    game.players[0].influences = ["duke"];
+    game.players[1].influences = ["captain"];
+
+    game._resolveReveal({
+      revealedCard: "duke",
+      challenger: "Bob",
+      challengee: "Alice",
+      isBlock: false,
+      prevAction: { action: "tax", source: "Alice", target: null },
+    });
+
+    expect(game.players[1].influences).toEqual([]);
+    expect(game.players[1].revealedInfluences).toContain("captain");
+    expect(game.sm.transition).toHaveBeenCalledWith(
+      PHASES.IDLE,
+      expect.objectContaining({
+        pendingAction: expect.objectContaining({ action: "tax" }),
+      })
+    );
+  });
+
+  test("claim proven, challenger has 2 cards → ask challenger to choose influence", () => {
+    const { game } = buildResolveGame();
+    game.players[0].influences = ["duke", "assassin"];
+    game.players[1].influences = ["captain", "contessa"];
+
+    game._resolveReveal({
+      revealedCard: "duke",
+      challenger: "Bob",
+      challengee: "Alice",
+      isBlock: false,
+      prevAction: { action: "tax", source: "Alice", target: null },
+    });
+
+    expect(game.sm.transition).toHaveBeenCalledWith(
+      PHASES.CHOOSE_INFLUENCE_PENDING,
+      expect.objectContaining({ playerName: "Bob" })
+    );
+  });
+
+  test("bluff caught, challengee has 1 card → challengee auto-loses, no pending action", () => {
+    const { game } = buildResolveGame();
+    // Alice claimed tax but has no duke, reveals captain (wrong card)
+    game.players[0].influences = ["captain"];
+    game.players[1].influences = ["contessa"];
+
+    game._resolveReveal({
+      revealedCard: "captain",
+      challenger: "Bob",
+      challengee: "Alice",
+      isBlock: false,
+      prevAction: { action: "tax", source: "Alice", target: null },
+    });
+
+    expect(game.players[0].influences).toEqual([]);
+    expect(game.players[0].revealedInfluences).toContain("captain");
+    expect(game.sm.transition).toHaveBeenCalledWith(
+      PHASES.IDLE,
+      expect.not.objectContaining({ pendingAction: expect.anything() })
+    );
+  });
+
+  test("Bug 4: assassination target fails challenge → loses ALL influences immediately", () => {
+    const { game } = buildResolveGame();
+    // Alice assassinates Bob. Bob challenges (claiming Alice has no assassin).
+    // Alice reveals assassin → Bob loses challenge AND faces assassination.
+    game.players[0].influences = ["assassin", "duke"];
+    game.players[1].influences = ["captain", "contessa"];
+
+    game._resolveReveal({
+      revealedCard: "assassin",
+      challenger: "Bob", // Bob challenged and lost
+      challengee: "Alice",
+      isBlock: false,
+      prevAction: { action: "assassinate", source: "Alice", target: "Bob" },
+    });
+
+    // Bob should lose ALL cards immediately (no choose dialogs)
+    expect(game.players[1].influences).toEqual([]);
+    expect(game.players[1].revealedInfluences).toEqual(
+      expect.arrayContaining(["captain", "contessa"])
+    );
+    expect(game.nextTurn).toHaveBeenCalled();
+    // sm.transition should NOT be called with CHOOSE_INFLUENCE_PENDING for Bob
+    const chooseCalls = game.sm.transition.mock.calls.filter(
+      ([phase, ctx]) =>
+        phase === PHASES.CHOOSE_INFLUENCE_PENDING && ctx?.playerName === "Bob"
+    );
+    expect(chooseCalls).toHaveLength(0);
+  });
+
+  test("contessa block accepted (no challenge) → blocker keeps all cards, no card loss", () => {
+    // This case never reaches _resolveReveal at all — the state machine timer fires
+    // transition(IDLE, { pendingAction: null }) and the block succeeds silently.
+    // Verify _resolveReveal itself doesn't touch the blocker when called with claimProven=true.
+    const { game } = buildResolveGame();
+    game.players[0].influences = ["assassin", "duke"];
+    game.players[1].influences = ["contessa", "captain"]; // Bob HAS contessa
+
+    game._resolveReveal({
+      revealedCard: "contessa", // correct card — claim proven
+      challenger: "Alice",
+      challengee: "Bob",
+      isBlock: true,
+      prevAction: { action: "assassinate", source: "Alice", target: "Bob" },
+      counterAction: { counterAction: "block_assassinate" },
+    });
+
+    // Bob proved contessa → block succeeds → Alice (challenger) loses, Bob keeps both cards
+    expect(game.players[1].influences.length).toBeGreaterThan(0);
+    expect(game.players[1].revealedInfluences).toHaveLength(0);
+  });
+
+  test("Bug 4b: contessa block bluff caught on assassination → blocker loses ALL influences immediately", () => {
+    const { game } = buildResolveGame();
+    // Alice assassinates Bob. Bob claims contessa block. Alice challenges.
+    // Bob reveals captain (wrong card → bluff caught) → assassination proceeds.
+    // Bob has 2 cards → should lose both immediately.
+    game.players[0].influences = ["assassin", "duke"];
+    game.players[1].influences = ["captain", "duke"]; // Bob has no contessa
+
+    game._resolveReveal({
+      revealedCard: "captain", // wrong card — bluff
+      challenger: "Alice", // challenger of the block
+      challengee: "Bob", // blocker (assassination target)
+      isBlock: true,
+      prevAction: { action: "assassinate", source: "Alice", target: "Bob" },
+      counterAction: { counterAction: "block_assassinate" },
+    });
+
+    expect(game.players[1].influences).toEqual([]);
+    expect(game.players[1].revealedInfluences).toEqual(
+      expect.arrayContaining(["captain", "duke"])
+    );
+    expect(game.nextTurn).toHaveBeenCalled();
+    const chooseCalls = game.sm.transition.mock.calls.filter(
+      ([phase, ctx]) =>
+        phase === PHASES.CHOOSE_INFLUENCE_PENDING && ctx?.playerName === "Bob"
+    );
+    expect(chooseCalls).toHaveLength(0);
+  });
+
+  test("Bug 4: other player (not target) fails assassination challenge → only loses 1 card, assassination still pending", () => {
+    const { game } = buildResolveGame();
+    // Alice assassinates Bob. Charlie challenges.
+    // Alice reveals assassin → Charlie (challenger, not target) loses 1 card.
+    // Assassination against Bob still pending.
+    game.players.push({
+      name: "Charlie",
+      socketID: "sock-2",
+      influences: ["contessa"],
+      revealedInfluences: [],
+      isDead: false,
+      money: 2,
+      missedTurns: 0,
+      color: "#fff",
+    });
+    game.nameIndexMap["Charlie"] = 2;
+    game.nameSocketMap["Charlie"] = "sock-2";
+    game.players[0].influences = ["assassin", "duke"];
+    game.players[1].influences = ["captain", "contessa"];
+
+    game._resolveReveal({
+      revealedCard: "assassin",
+      challenger: "Charlie", // Charlie challenged (not the assassination target)
+      challengee: "Alice",
+      isBlock: false,
+      prevAction: { action: "assassinate", source: "Alice", target: "Bob" },
+    });
+
+    // Charlie loses their 1 card automatically
+    expect(game.players[2].influences).toEqual([]);
+    expect(game.players[2].revealedInfluences).toContain("contessa");
+    // Assassination against Bob still pending
+    expect(game.sm.transition).toHaveBeenCalledWith(
+      PHASES.IDLE,
+      expect.objectContaining({
+        pendingAction: expect.objectContaining({ action: "assassinate" }),
+      })
+    );
+  });
+});
+
+// ── Single-card auto-lose (no choose dialog) ──────────────────────────────────
+
+describe("CoupGame — single-card target auto-loses without choose dialog", () => {
+  function buildApplyGame() {
+    const { game, gameSocket } = buildGame(["Alice", "Bob"]);
+    game.players[0].money = 10;
+    game.players[1].revealedInfluences = [];
+    game.sm.transition = jest.fn();
+    game.nextTurn = jest.fn();
+    return { game, gameSocket };
+  }
+
+  test("coup on target with 1 card → auto-reveals card, no CHOOSE_INFLUENCE_PENDING", () => {
+    const { game } = buildApplyGame();
+    game.players[1].influences = ["duke"];
+
+    game.applyAction({ action: "coup", source: "Alice", target: "Bob" });
+
+    expect(game.players[1].influences).toEqual([]);
+    expect(game.players[1].revealedInfluences).toContain("duke");
+    expect(game.nextTurn).toHaveBeenCalled();
+    const chooseCalls = game.sm.transition.mock.calls.filter(
+      ([phase]) => phase === PHASES.CHOOSE_INFLUENCE_PENDING
+    );
+    expect(chooseCalls).toHaveLength(0);
+  });
+
+  test("assassinate on target with 1 card → auto-reveals card, no CHOOSE_INFLUENCE_PENDING", () => {
+    const { game } = buildApplyGame();
+    game.players[0].money = 3;
+    game.players[1].influences = ["captain"];
+
+    game.applyAction({ action: "assassinate", source: "Alice", target: "Bob" });
+
+    expect(game.players[1].influences).toEqual([]);
+    expect(game.players[1].revealedInfluences).toContain("captain");
+    expect(game.nextTurn).toHaveBeenCalled();
+    const chooseCalls = game.sm.transition.mock.calls.filter(
+      ([phase]) => phase === PHASES.CHOOSE_INFLUENCE_PENDING
+    );
+    expect(chooseCalls).toHaveLength(0);
+  });
+
+  test("coup on target with 2 cards → opens CHOOSE_INFLUENCE_PENDING", () => {
+    const { game } = buildApplyGame();
+    game.players[1].influences = ["duke", "captain"];
+
+    game.applyAction({ action: "coup", source: "Alice", target: "Bob" });
+
+    expect(game.sm.transition).toHaveBeenCalledWith(
+      PHASES.CHOOSE_INFLUENCE_PENDING,
+      expect.objectContaining({ playerName: "Bob" })
+    );
+    expect(game.nextTurn).not.toHaveBeenCalled();
   });
 });
