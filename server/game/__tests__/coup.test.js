@@ -69,6 +69,7 @@ function buildGame(playerNames) {
   sm.onExit = () => {};
 
   game.resetGame();
+  game.listen();
 
   return { game, gameSocket, playerSockets };
 }

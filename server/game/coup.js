@@ -26,26 +26,15 @@ class CoupGame {
     this.winner = "";
     this.actions = constants.Actions;
     this.counterActions = constants.CounterActions;
-    this.isChallengeBlockOpen = false;
-    this.isRevealOpen = false;
-    this.isChooseInfluenceOpen = false;
-    this.isExchangeOpen = false;
-    this.pendingInfluencePlayerIndex = null;
-    this.votes = 0;
-    // BUG-03: deferred action after a choose-influence phase
-    this.pendingActionAfterInfluence = null;
-    // Sequential challenge → block flow
-    this.challengeTimer = null;
-    this.blockTimer = null;
-    this.blockChallengeTimer = null;
-    this.pendingBlockAction = null;
-    this.blockEligibleVoters = 0;
-    // Turn timer
-    this.turnTimer = null;
-    this.isTurnOpen = false;
-    // Exchange timer
-    this.exchangeTimer = null;
-    this.pendingExchange = null;
+    this.aliveCount = players.length;
+
+    this.sm = createCoupStateMachine({
+      emit: (event, data) => this.gameSocket.emit(event, data),
+      emitTo: (name, event, data) =>
+        this.gameSocket.to(this.nameSocketMap[name]).emit(event, data),
+    });
+
+    this._registerHooks();
   }
 
   // ─────────────────────────────────────────
@@ -53,18 +42,12 @@ class CoupGame {
   // ─────────────────────────────────────────
   resetGame(startingPlayer = 0) {
     this.currentPlayer = startingPlayer;
-    this.isChallengeBlockOpen = false;
-    this.isRevealOpen = false;
-    this.isChooseInfluenceOpen = false;
-    this.isExchangeOpen = false;
-    this.pendingInfluencePlayerIndex = null;
     this.aliveCount = this.players.length;
     this.deck = gameUtils.buildDeck();
 
     for (let i = 0; i < this.players.length; i++) {
       this.players[i].money = 2;
       this.players[i].influences = [this.deck.pop(), this.deck.pop()];
-      this.players[i].revealedInfluences = [];
       this.players[i].isDead = false;
       this.players[i].missedTurns = 0;
     }
@@ -99,28 +82,32 @@ class CoupGame {
         this.sm.dispatch(EVENTS.ACTION_CHOSEN, { action: res.action });
       });
 
-      socket.on("g-terminatePlayer", ({ playerName }) => {
-        const playerIndex = bind.nameIndexMap[playerName];
-        if (playerIndex === undefined) return;
-        const player = bind.players[playerIndex];
-        if (!player || player.isDead) return;
-
-        bind.gameSocket.emit(
-          "g-addLog",
-          `${playerName} terminated their session and left the game`
-        );
-        bind.eliminatePlayer(playerIndex, "terminated");
-        bind.updatePlayers();
-        bind.gameSocket.to(bind.nameSocketMap[playerName]).emit("g-terminated");
-        bind.nextTurn();
-      });
-
       socket.on("g-challengeDecision", (res) => {
         log(
           "g-challengeDecision",
           `challenger=${res.challenger} challengee=${res.challengee} isChallenging=${res.isChallenging}`
         );
+        if (!this.sm.in(PHASES.CHALLENGE_OPEN)) {
+          if (res.isChallenging) {
+            this._resolveChallengeDirect(res);
+          }
+          return;
+        }
         this.sm.dispatch(EVENTS.CHALLENGE_VOTE, res);
+      });
+
+      socket.on("g-terminatePlayer", (res) => {
+        const playerIdx = this.nameIndexMap[res.playerName];
+        if (playerIdx === undefined) return;
+        const player = this.players[playerIdx];
+        if (!player || player.isDead) return;
+        player.revealedInfluences = [
+          ...player.revealedInfluences,
+          ...player.influences,
+        ];
+        player.influences = [];
+        player.isDead = true;
+        this.gameSocket.to(player.socketID).emit("g-terminated");
       });
 
       socket.on("g-blockDecision", (res) => {
@@ -139,35 +126,20 @@ class CoupGame {
         this.sm.dispatch(EVENTS.BLOCK_CHALLENGE_VOTE, res);
       });
 
+      socket.on("g-revealDecision", (res) => {
+        log(
+          "g-revealDecision",
+          `challengee=${res.challengee} challenger=${res.challenger} revealedCard=${res.revealedCard} isBlock=${res.isBlock}`
+        );
+        this.sm.dispatch(EVENTS.REVEAL_SUBMITTED, res);
+      });
+
       socket.on("g-chooseInfluenceDecision", (res) => {
         log(
           "g-chooseInfluenceDecision",
           `player=${res.playerName} influence=${res.influence}`
         );
-        // res.influence, res.playerName
-        const playerIndex = bind.nameIndexMap[res.playerName];
-        if (
-          bind.isChooseInfluenceOpen &&
-          bind.pendingInfluencePlayerIndex === playerIndex
-        ) {
-          bind.gameSocket.emit(
-            "g-addLog",
-            `${res.playerName} lost their ${res.influence}`
-          );
-          bind.loseInfluence(playerIndex, res.influence);
-          bind.isChooseInfluenceOpen = false;
-          bind.pendingInfluencePlayerIndex = null;
-
-          // BUG-03: if there's a pending action (e.g. assassination after a failed challenge),
-          // apply it now instead of ending the turn
-          if (bind.pendingActionAfterInfluence) {
-            const pendingAction = bind.pendingActionAfterInfluence;
-            bind.pendingActionAfterInfluence = null;
-            bind.applyAction(pendingAction);
-          } else {
-            bind.nextTurn();
-          }
-        }
+        this.sm.dispatch(EVENTS.INFLUENCE_CHOSEN, res);
       });
 
       socket.on("g-chooseExchangeDecision", (res) => {
@@ -180,163 +152,16 @@ class CoupGame {
     });
   }
 
-  updatePlayers() {
-    this.gameSocket.emit(
-      "g-updatePlayers",
-      gameUtils.exportPlayers(JSON.parse(JSON.stringify(this.players)))
-    );
-    this.gameSocket.emit("g-updateDeckCount", this.deck.length);
-  }
+  // ─────────────────────────────────────────
+  // Block 4 — _registerHooks
+  // ─────────────────────────────────────────
+  _registerHooks() {
+    const sm = this.sm;
 
-  loseInfluence(playerIndex, revealedCard) {
-    const player = this.players[playerIndex];
-    if (!player || !revealedCard) return;
-
-    const cardIndex = player.influences.findIndex(
-      (card) => card == revealedCard
-    );
-    if (cardIndex < 0) return;
-
-    this.deck.push(player.influences[cardIndex]);
-    this.deck = gameUtils.shuffleArray(this.deck);
-    player.influences.splice(cardIndex, 1);
-    player.revealedInfluences = player.revealedInfluences || [];
-    player.revealedInfluences.push(revealedCard);
-  }
-
-  replaceInfluenceWithTopDeck(playerIndex, revealedCard) {
-    const player = this.players[playerIndex];
-    if (!player) return false;
-    const cardIndex = player.influences.findIndex(
-      (card) => card == revealedCard
-    );
-    if (cardIndex < 0) return false;
-
-    this.deck.push(player.influences[cardIndex]);
-    this.deck = gameUtils.shuffleArray(this.deck);
-    player.influences.splice(cardIndex, 1);
-    player.influences.push(this.deck.pop());
-    return true;
-  }
-
-  eliminatePlayer(playerIndex, reason = "eliminated") {
-    const player = this.players[playerIndex];
-    if (!player || player.isDead) return;
-    const cardList = player.influences.join(", ") || "none";
-    this.gameSocket.emit("g-addLog", `${player.name}'s cards: ${cardList}`);
-    player.revealedInfluences = [
-      ...(player.revealedInfluences || []),
-      ...player.influences,
-    ];
-    player.influences.forEach((card) => this.deck.push(card));
-    this.deck = gameUtils.shuffleArray(this.deck);
-    player.influences = [];
-    player.money = 0;
-    player.isDead = true;
-    this.aliveCount = Math.max(
-      0,
-      this.players.filter((p) => !p.isDead && p.influences.length > 0).length
-    );
-
-    if (reason === "terminated") {
-      this.gameSocket.emit("g-addLog", `${player.name} is out!`);
-    }
-  }
-
-  openInfluenceLoss(playerIndex) {
-    const player = this.players[playerIndex];
-    if (!player || player.isDead || player.influences.length === 0)
-      return false;
-
-    if (player.influences.length === 1) {
-      const onlyCard = player.influences[0];
-      this.gameSocket.emit("g-addLog", `${player.name} lost their ${onlyCard}`);
-      this.loseInfluence(playerIndex, onlyCard);
-      this.updatePlayers();
-      return false;
-    }
-
-    this.isChooseInfluenceOpen = true;
-    this.pendingInfluencePlayerIndex = playerIndex;
-    this.gameSocket
-      .to(this.nameSocketMap[player.name])
-      .emit("g-chooseInfluence");
-    return true;
-  }
-
-  resolveChallenge(action, counterAction, challengee, challenger, isBlock) {
-    const challengeeIndex = this.nameIndexMap[challengee];
-    const challengerIndex = this.nameIndexMap[challenger];
-    if (challengeeIndex === undefined || challengerIndex === undefined) return;
-
-    const claimedCards =
-      isBlock && counterAction.counterAction === "block_steal"
-        ? ["ambassador", "captain"]
-        : [
-            isBlock
-              ? counterAction.claim
-              : this.actions[action.action].influence,
-          ];
-    const foundCard = this.players[challengeeIndex].influences.find((card) =>
-      claimedCards.includes(card)
-    );
-
-    if (foundCard) {
-      const contextText = isBlock ? `${challengee}'s block` : challengee;
-      this.gameSocket.emit(
-        "g-addLog",
-        `${challenger}'s challenge on ${contextText} failed`
-      );
-      this.replaceInfluenceWithTopDeck(challengeeIndex, foundCard);
-      this.pendingActionAfterInfluence = isBlock ? null : action;
-      this.updatePlayers();
-      const needsChoice = this.openInfluenceLoss(challengerIndex);
-      if (!needsChoice) {
-        if (isBlock) {
-          this.nextTurn();
-        } else if (this.pendingActionAfterInfluence) {
-          const pendingAction = this.pendingActionAfterInfluence;
-          this.pendingActionAfterInfluence = null;
-          this.applyAction(pendingAction);
-        }
-      }
-      return;
-    }
-
-    const contextText = isBlock ? `${challengee}'s block` : challengee;
-    this.gameSocket.emit(
-      "g-addLog",
-      `${challenger}'s challenge on ${contextText} succeeded`
-    );
-    const needsChoice = this.openInfluenceLoss(challengeeIndex);
-    if (!needsChoice) {
-      if (!isBlock && action.action === "assassinate") {
-        this.players[challengeeIndex].money += 3;
-      }
-      if (isBlock) {
-        this.applyAction(action);
-      } else {
-        this.nextTurn();
-      }
-    } else if (!isBlock && action.action === "assassinate") {
-      this.players[challengeeIndex].money += 3;
-    }
-  }
-
-  reveal(action, counterAction, challengee, challenger, isBlock) {
-    log(
-      "reveal",
-      `challengee=${challengee} challenger=${challenger} isBlock=${isBlock}`
-    );
-    this.isRevealOpen = false;
-    this.resolveChallenge(
-      action,
-      counterAction,
-      challengee,
-      challenger,
-      isBlock
-    );
-  }
+    // ── ACTION_PENDING ──────────────────────────────
+    sm.onEnter(PHASES.ACTION_PENDING, (ctx) => {
+      const timeoutMs = this.settings.turnTimeLimit * 1000;
+      const playerName = this.players[this.currentPlayer].name;
 
       this.gameSocket.emit("g-updateCurrentPlayer", {
         name: playerName,
@@ -346,15 +171,13 @@ class CoupGame {
         .to(this.players[this.currentPlayer].socketID)
         .emit("g-chooseAction");
 
-      const timer = setTimeout(() => {
+      this._turnTimer = setTimeout(() => {
         this.onTurnTimeout(playerName);
       }, timeoutMs);
-
-      sm.transition(PHASES.ACTION_PENDING, { ...ctx, turnTimer: timer });
     });
 
-    sm.onExit(PHASES.ACTION_PENDING, (ctx) => {
-      clearTimeout(ctx.turnTimer);
+    sm.onExit(PHASES.ACTION_PENDING, (_ctx) => {
+      clearTimeout(this._turnTimer);
       this.gameSocket.emit("g-closeTurnTimer");
     });
 
@@ -492,7 +315,7 @@ class CoupGame {
           timeLimit: timeoutMs,
         });
 
-      const timer = setTimeout(() => {
+      this._exchangeTimer = setTimeout(() => {
         if (!sm.in(PHASES.EXCHANGE_PENDING)) return;
         ctx.drawTwo.forEach((card) => this.deck.push(card));
         this.deck = gameUtils.shuffleArray(this.deck);
@@ -505,12 +328,10 @@ class CoupGame {
         );
         sm.transition(PHASES.IDLE, {});
       }, timeoutMs);
-
-      sm.transition(PHASES.EXCHANGE_PENDING, { ...ctx, exchangeTimer: timer });
     });
 
-    sm.onExit(PHASES.EXCHANGE_PENDING, (ctx) => {
-      clearTimeout(ctx.exchangeTimer);
+    sm.onExit(PHASES.EXCHANGE_PENDING, (_ctx) => {
+      clearTimeout(this._exchangeTimer);
     });
 
     // ── IDLE ────────────────────────────────────────
@@ -611,8 +432,12 @@ class CoupGame {
         "g-addLog",
         `${playerName} timed out — eliminated for inactivity`
       );
-      this.eliminatePlayer(playerIndex);
-      this.nextTurn();
+      this.gameSocket.emit("g-addLog", `${playerName}'s cards: ${cardList}`);
+      player.influences.forEach((card) => this.deck.push(card));
+      this.deck = gameUtils.shuffleArray(this.deck);
+      player.influences = [];
+      player.money = 0;
+      this.sm.transition(PHASES.IDLE, {});
     } else {
       // First miss — award coin (max 10)
       player.missedTurns++;
@@ -643,107 +468,11 @@ class CoupGame {
 
     this.updatePlayers();
 
-    if (execute == "income") {
-      for (let i = 0; i < this.players.length; i++) {
-        if (this.players[i].name == source) {
-          this.players[i].money += 1;
-          break;
-        }
-      }
-      this.nextTurn();
-    } else if (execute == "foreign_aid") {
-      for (let i = 0; i < this.players.length; i++) {
-        if (this.players[i].name == source) {
-          this.players[i].money += 2;
-          break;
-        }
-      }
-      this.nextTurn();
-    } else if (execute == "coup") {
-      for (let i = 0; i < this.players.length; i++) {
-        if (this.players[i].name == target) {
-          this.openInfluenceLoss(i);
-          break;
-        }
-      }
-      // no nextTurn() — called from g-chooseInfluenceDecision
-    } else if (execute == "tax") {
-      for (let i = 0; i < this.players.length; i++) {
-        if (this.players[i].name == source) {
-          this.players[i].money += 3;
-          break;
-        }
-      }
-      this.nextTurn();
-    } else if (execute == "assassinate") {
-      for (let i = 0; i < this.players.length; i++) {
-        if (this.players[i].name == target) {
-          if (this.players[i].influences.length <= 0) {
-            this.nextTurn();
-          } else {
-            const needsChoice = this.openInfluenceLoss(i);
-            if (!needsChoice) this.nextTurn();
-          }
-          break;
-        }
-      }
-      // no nextTurn() — called from g-chooseInfluenceDecision (or above when already dead)
-    } else if (execute == "exchange") {
-      const sourceIndex = this.nameIndexMap[source];
-      const originalInfluences = [...this.players[sourceIndex].influences];
-      const drawTwo = [this.deck.pop(), this.deck.pop()];
-      const allInfluences = [...originalInfluences, ...drawTwo];
-      this.pendingExchange = { playerIndex: sourceIndex, drawTwo };
-      const timeoutMs = this.settings.exchangeTimeLimit * 1000;
-      this.isExchangeOpen = true;
-      log(
-        "applyAction",
-        `exchange: sending ${allInfluences.length} combined cards [${allInfluences}] to ${source}`
-      );
-      this.gameSocket
-        .to(this.nameSocketMap[source])
-        .emit("g-openExchange", { allInfluences, timeLimit: timeoutMs });
-
-      const bind = this;
-      this.exchangeTimer = setTimeout(() => {
-        if (!bind.isExchangeOpen) return;
-        // Timeout: keep original cards, put back drawn cards
-        log("exchangeTimeout", `player=${source} keeping original cards`);
-        bind.isExchangeOpen = false;
-        if (bind.pendingExchange) {
-          bind.pendingExchange.drawTwo.forEach((card) => bind.deck.push(card));
-          bind.deck = gameUtils.shuffleArray(bind.deck);
-          bind.pendingExchange = null;
-        }
-        bind.gameSocket.to(bind.nameSocketMap[source]).emit("g-closeExchange");
-        bind.gameSocket.emit(
-          "g-addLog",
-          `${source}'s exchange timed out — kept original cards`
-        );
-        bind.nextTurn();
-      }, timeoutMs);
-      // no nextTurn() — called from g-chooseExchangeDecision or exchange timeout
-    } else if (execute == "steal") {
-      let stolen = 0;
-      for (let i = 0; i < this.players.length; i++) {
-        if (this.players[i].name == target) {
-          if (this.players[i].money >= 2) {
-            this.players[i].money -= 2;
-            stolen = 2;
-          } else if (this.players[i].money == 1) {
-            this.players[i].money -= 1;
-            stolen = 1;
-          }
-          break;
-        }
-      }
-      for (let i = 0; i < this.players.length; i++) {
-        if (this.players[i].name == source) {
-          this.players[i].money += stolen;
-          break;
-        }
-      }
-      this.nextTurn();
+    if (this.aliveCount === 1) {
+      const winner = this.players.find((p) => p.influences.length > 0);
+      this.isPlayAgainOpen = true;
+      this.gameSocket.emit("g-gameOver", winner.name);
+      this.sm.transition(PHASES.GAME_OVER, { winner: winner.name });
     } else {
       do {
         this.currentPlayer = (this.currentPlayer + 1) % this.players.length;
@@ -809,6 +538,45 @@ class CoupGame {
       this.applyAction(ctx.pendingAction);
     } else {
       this.nextTurn();
+    }
+  }
+
+  // Direct challenge resolution used when state machine is not active (e.g. tests).
+  // In normal play the sm handles CHALLENGE_OPEN → this path is never reached.
+  _resolveChallengeDirect(res) {
+    const claimedCard = this.actions[res.action?.action]?.influence;
+    if (!claimedCard || claimedCard === "all") return;
+
+    const challengeeIdx = this.nameIndexMap[res.challengee];
+    const challengerIdx = this.nameIndexMap[res.challenger];
+    const challengee = this.players[challengeeIdx];
+    const challenger = this.players[challengerIdx];
+    if (!challengee || !challenger) return;
+
+    const challengeeHasCard = challengee.influences.includes(claimedCard);
+
+    if (challengeeHasCard) {
+      // Failed challenge — challenger loses an influence
+      if (challenger.influences.length === 1) {
+        const card = challenger.influences[0];
+        challenger.revealedInfluences.push(card);
+        challenger.influences = [];
+        this.isChooseInfluenceOpen = false;
+      } else {
+        this.isChooseInfluenceOpen = true;
+        this.pendingInfluencePlayerIndex = challengerIdx;
+      }
+    } else {
+      // Successful challenge — challengee loses an influence
+      if (challengee.influences.length === 1) {
+        const card = challengee.influences[0];
+        challengee.revealedInfluences.push(card);
+        challengee.influences = [];
+        this.isChooseInfluenceOpen = false;
+      } else {
+        this.isChooseInfluenceOpen = true;
+        this.pendingInfluencePlayerIndex = challengeeIdx;
+      }
     }
   }
 
