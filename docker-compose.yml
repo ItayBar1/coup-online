@@ -1,6 +1,6 @@
 services:
   coup:
-    image: ghcr.io/${GITHUB_REPOSITORY:-itaybar1/coup-online}:${IMAGE_TAG:-latest}
+    image: ghcr.io/itaybar1/coup-online:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile
