@@ -102,6 +102,10 @@ class CoupGame {
           }
           return;
         }
+        if (res.isChallenging) {
+          this._autoResolveChallenge(res, false);
+          return;
+        }
         this.sm.dispatch(EVENTS.CHALLENGE_VOTE, res);
       });
 
@@ -146,6 +150,10 @@ class CoupGame {
           "g-blockChallengeDecision",
           `challenger=${res.challenger} challengee=${res.challengee} isChallenging=${res.isChallenging}`
         );
+        if (this.sm.in(PHASES.BLOCK_CHALLENGE_OPEN) && res.isChallenging) {
+          this._autoResolveChallenge(res, true);
+          return;
+        }
         this.sm.dispatch(EVENTS.BLOCK_CHALLENGE_VOTE, res);
       });
 
@@ -361,10 +369,10 @@ class CoupGame {
     // ── IDLE ────────────────────────────────────────
     // Called after every phase ends — decides what happens next
     sm.onEnter(PHASES.IDLE, (ctx) => {
-      if (ctx.pendingAction) {
-        this.applyAction(ctx.pendingAction);
-      } else if (ctx.chosenInfluence) {
+      if (ctx.chosenInfluence) {
         this._afterInfluenceChosen(ctx);
+      } else if (ctx.pendingAction) {
+        this.applyAction(ctx.pendingAction);
       } else if (ctx.kept) {
         this._afterExchangeChosen(ctx);
       } else {
@@ -612,6 +620,40 @@ class CoupGame {
         this.pendingInfluencePlayerIndex = challengeeIdx;
       }
     }
+  }
+
+  // Skip the reveal-picker modal for the challengee. The server already knows
+  // whether the claim can be proven, so pick the revealedCard automatically:
+  // the claimed card if held, else any held card. Then route through _resolveReveal.
+  _autoResolveChallenge(res, isBlock) {
+    const ctx = this.sm.getContext();
+    const challengeePlayer = this._findPlayer(res.challengee);
+    if (!challengeePlayer) return;
+
+    let claimedCards;
+    if (isBlock) {
+      const blockActionName = ctx.counterAction?.counterAction;
+      claimedCards = this.counterActions[blockActionName]?.influences || [];
+    } else {
+      const actionName = ctx.action?.action;
+      const influence = actionName ? this.actions[actionName]?.influence : null;
+      claimedCards = influence && influence !== "all" ? [influence] : [];
+    }
+
+    const held = claimedCards.find((c) =>
+      challengeePlayer.influences.includes(c)
+    );
+    const revealedCard = held ?? challengeePlayer.influences[0] ?? null;
+    if (!revealedCard) return;
+
+    this._resolveReveal({
+      revealedCard,
+      challenger: res.challenger,
+      challengee: res.challengee,
+      isBlock,
+      prevAction: isBlock ? ctx.prevAction : ctx.action,
+      counterAction: isBlock ? ctx.counterAction : undefined,
+    });
   }
 
   // Resolves a challenge after the challengee reveals a card.

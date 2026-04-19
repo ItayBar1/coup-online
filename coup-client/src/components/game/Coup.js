@@ -532,17 +532,12 @@ export default class Coup extends Component {
                   </div>
                 )}
 
-                {/* Dead overlay */}
+                {/* Spectator banner — small, non-blocking */}
                 {isDead && (
-                  <div className="fixed inset-0 z-30 bg-surface/70 backdrop-blur-sm flex items-center justify-center pointer-events-none">
-                    <div className="text-center">
-                      <p className="font-label text-sm tracking-widest text-error/60 uppercase">
-                        OPERATIVE ELIMINATED
-                      </p>
-                      <p className="font-label text-[10px] text-outline mt-2">
-                        Observing remaining operatives...
-                      </p>
-                    </div>
+                  <div className="fixed top-4 left-1/2 -translate-x-1/2 z-30 bg-surface-container/80 border border-error/40 px-4 py-2 pointer-events-none">
+                    <p className="font-label text-[10px] tracking-widest text-error/80 uppercase">
+                      OPERATIVE ELIMINATED — SPECTATING
+                    </p>
                   </div>
                 )}
 

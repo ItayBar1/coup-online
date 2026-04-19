@@ -406,6 +406,173 @@ describe("CoupGame — new terminate/challenge edge cases", () => {
   });
 });
 
+// ── Bug 9: IDLE must process chosenInfluence before pendingAction ────────────
+
+describe("CoupGame — failed challenge applies both card loss and pending action", () => {
+  test("challenger picks influence to lose, then pending tax still applies to actor, turn advances to challenger", () => {
+    const { game, gameSocket, playerSockets } = buildGameWithRealSM([
+      "Alice",
+      "Bob",
+    ]);
+
+    // Force state: Alice current, Alice has duke (claim provable), Bob has 2 cards
+    game.currentPlayer = 0;
+    game.players[0].influences = ["duke", "assassin"];
+    game.players[0].money = 2;
+    game.players[1].influences = ["captain", "contessa"];
+    game.players[1].money = 2;
+
+    const aliceSock = playerSockets[game.players[0].socketID];
+    const bobSock = playerSockets[game.players[1].socketID];
+
+    aliceSock._trigger("g-actionDecision", {
+      action: { action: "tax", source: "Alice", target: null },
+    });
+
+    // Bob challenges — Alice proves duke → Bob must lose a card and tax still applies
+    bobSock._trigger("g-challengeDecision", {
+      action: { action: "tax", source: "Alice", target: null },
+      isChallenging: true,
+      challengee: "Alice",
+      challenger: "Bob",
+    });
+
+    // Bob picks captain to lose
+    bobSock._trigger("g-chooseInfluenceDecision", {
+      playerName: "Bob",
+      influence: "captain",
+    });
+
+    // Card loss must be applied
+    expect(game.players[1].influences).not.toContain("captain");
+    expect(game.players[1].revealedInfluences).toContain("captain");
+
+    // Tax still applies → Alice went from 2 to 5 coins (not swapped duke; redraw may change hand)
+    expect(game.players[0].money).toBe(5);
+
+    // Turn advances to Bob (not stays on Alice, not skips Bob)
+    expect(game.currentPlayer).toBe(1);
+  });
+});
+
+// ── Bug 1b: skip reveal-picker when claim cannot be proven ───────────────────
+
+describe("CoupGame — reveal-picker skipped when challengee lacks claimed card", () => {
+  test("bluff caught, challengee has 2 cards → g-chooseReveal NOT emitted, g-chooseInfluence emitted to challengee", () => {
+    const { game, gameSocket, playerSockets } = buildGameWithRealSM([
+      "Alice",
+      "Bob",
+    ]);
+
+    game.currentPlayer = 0;
+    game.players[0].influences = ["captain", "assassin"]; // no duke
+    game.players[1].influences = ["duke", "contessa"];
+
+    const aliceSock = playerSockets[game.players[0].socketID];
+    const bobSock = playerSockets[game.players[1].socketID];
+
+    aliceSock._trigger("g-actionDecision", {
+      action: { action: "tax", source: "Alice", target: null },
+    });
+
+    bobSock._trigger("g-challengeDecision", {
+      action: { action: "tax", source: "Alice", target: null },
+      isChallenging: true,
+      challengee: "Alice",
+      challenger: "Bob",
+    });
+
+    // Reveal-picker modal must NOT appear
+    const revealToEmits = gameSocket._toEmitted.filter(
+      (e) => e.event === "g-chooseReveal"
+    );
+    expect(revealToEmits).toHaveLength(0);
+
+    // Card-loss modal must go directly to Alice (challengee)
+    const chooseInfluence = gameSocket._toEmitted.filter(
+      (e) =>
+        e.event === "g-chooseInfluence" && e.to === game.players[0].socketID
+    );
+    expect(chooseInfluence.length).toBeGreaterThan(0);
+  });
+
+  test("bluff caught, challengee has 1 card → auto-eliminated, no g-chooseInfluence, no g-chooseReveal", () => {
+    const { game, gameSocket, playerSockets } = buildGameWithRealSM([
+      "Alice",
+      "Bob",
+    ]);
+
+    game.currentPlayer = 0;
+    game.players[0].influences = ["captain"]; // single non-matching card
+    game.players[1].influences = ["duke", "contessa"];
+
+    const aliceSock = playerSockets[game.players[0].socketID];
+    const bobSock = playerSockets[game.players[1].socketID];
+
+    aliceSock._trigger("g-actionDecision", {
+      action: { action: "tax", source: "Alice", target: null },
+    });
+
+    bobSock._trigger("g-challengeDecision", {
+      action: { action: "tax", source: "Alice", target: null },
+      isChallenging: true,
+      challengee: "Alice",
+      challenger: "Bob",
+    });
+
+    expect(
+      gameSocket._toEmitted.filter((e) => e.event === "g-chooseReveal")
+    ).toHaveLength(0);
+    expect(
+      gameSocket._toEmitted.filter((e) => e.event === "g-chooseInfluence")
+    ).toHaveLength(0);
+    expect(game.players[0].influences).toEqual([]);
+    expect(game.players[0].revealedInfluences).toContain("captain");
+  });
+});
+
+// ── Bug 3: steal+block must not softlock ─────────────────────────────────────
+
+describe("CoupGame — steal+block opens block-challenge window", () => {
+  test("after target blocks steal, g-openBlockChallenge is emitted", () => {
+    const { game, gameSocket, playerSockets } = buildGameWithRealSM([
+      "Alice",
+      "Bob",
+    ]);
+
+    game.currentPlayer = 0;
+    game.players[0].money = 2;
+    game.players[1].money = 2;
+
+    const aliceSock = playerSockets[game.players[0].socketID];
+    const bobSock = playerSockets[game.players[1].socketID];
+
+    // Alice steals from Bob (challengeable + blockable)
+    aliceSock._trigger("g-actionDecision", {
+      action: { action: "steal", source: "Alice", target: "Bob" },
+    });
+
+    // Bob declines to challenge → flow advances to BLOCK_OPEN
+    bobSock._trigger("g-challengeDecision", {
+      action: { action: "steal", source: "Alice", target: "Bob" },
+      isChallenging: false,
+      challengee: "Alice",
+      challenger: "Bob",
+    });
+
+    // Bob blocks with captain
+    bobSock._trigger("g-blockDecision", {
+      action: { action: "steal", source: "Alice", target: "Bob" },
+      counterAction: { counterAction: "block_steal" },
+      isBlocking: true,
+      blockee: "Alice",
+      blocker: "Bob",
+    });
+
+    expect(lastEmit(gameSocket, "g-openBlockChallenge")).toBeTruthy();
+  });
+});
+
 // ── Bug 1: challenge window must stay open ────────────────────────────────────
 
 describe("CoupGame — Bug 1: challenge window stays open", () => {

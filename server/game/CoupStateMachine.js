@@ -85,8 +85,6 @@ function createCoupStateMachine({ emit, emitTo }) {
             prevAction: ctx.action,
             blockee: payload.blockee,
             blocker: payload.blocker,
-            votes: 0,
-            eligibleVoters: ctx.eligibleVoters,
           });
         } else if (ctx.votes + 1 >= ctx.eligibleVoters) {
           transition(PHASES.IDLE, { pendingAction: ctx.action });

@@ -6,9 +6,13 @@ function RevealedInfluenceMini({ name }) {
   const key = name?.toLowerCase();
   const image = key ? CARD_IMAGES[key] : null;
   if (!image) return null;
+  const label = key ? key.charAt(0).toUpperCase() + key.slice(1) : "";
 
   return (
-    <div className="w-10 h-14 border border-outline/25 overflow-hidden bg-surface-container-highest">
+    <div
+      title={label}
+      className="w-10 h-14 border border-outline/25 overflow-hidden bg-surface-container-highest"
+    >
       <img
         src={image}
         alt={key}
