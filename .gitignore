@@ -106,3 +106,6 @@ dist
 ngrok
 
 .DS_Store
+
+# Playwright MCP browser-test artifacts
+.playwright-mcp/

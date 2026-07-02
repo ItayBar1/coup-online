@@ -137,39 +137,52 @@ describe("CoupGame — 2-player starting coins", () => {
 
 describe("CoupGame — coin validation", () => {
   test("coup rejected when player has fewer than 7 coins", () => {
-    const { game, playerSockets } = buildGame(["Alice", "Bob"]);
-
-    const actingSock = playerSockets[game.players[game.currentPlayer].socketID];
-    const actingName = game.players[game.currentPlayer].name;
-    const beforeMoney = game.players[game.currentPlayer].money;
-
-    actingSock._trigger("g-actionDecision", {
-      action: { action: "coup", source: actingName, target: "Bob" },
-    });
-
-    expect(game.players[game.currentPlayer].money).toBe(beforeMoney);
-  });
-
-  test("assassinate rejected when player has fewer than 3 coins", () => {
-    const { game, playerSockets } = buildGame(["Alice", "Bob"]);
+    const { game, gameSocket, playerSockets } = buildGameWithRealSM([
+      "Alice",
+      "Bob",
+    ]);
 
     const idx = game.currentPlayer;
     const actingSock = playerSockets[game.players[idx].socketID];
-    const beforeMoney = game.players[idx].money;
+    const actingName = game.players[idx].name;
+    const targetName = game.players[(idx + 1) % 2].name;
+    game.players[idx].money = 6;
+
+    actingSock._trigger("g-actionDecision", {
+      action: { action: "coup", source: actingName, target: targetName },
+    });
+
+    expect(game.players[idx].money).toBe(6);
+    // Player re-prompted so they aren't stuck
+    expect(
+      gameSocket._toEmitted.filter(
+        (e) =>
+          e.event === "g-chooseAction" && e.to === game.players[idx].socketID
+      ).length
+    ).toBeGreaterThan(0);
+  });
+
+  test("assassinate rejected when player has fewer than 3 coins", () => {
+    const { game, playerSockets } = buildGameWithRealSM(["Alice", "Bob"]);
+
+    const idx = game.currentPlayer;
+    const actingSock = playerSockets[game.players[idx].socketID];
+    const targetName = game.players[(idx + 1) % 2].name;
+    game.players[idx].money = 2;
 
     actingSock._trigger("g-actionDecision", {
       action: {
         action: "assassinate",
         source: game.players[idx].name,
-        target: "Bob",
+        target: targetName,
       },
     });
 
-    expect(game.players[idx].money).toBe(beforeMoney);
+    expect(game.players[idx].money).toBe(2);
   });
 
   test("forced coup at 10+ coins — non-coup actions rejected", () => {
-    const { game, playerSockets } = buildGame(["Alice", "Bob"]);
+    const { game, playerSockets } = buildGameWithRealSM(["Alice", "Bob"]);
 
     const idx = game.currentPlayer;
     const actingSock = playerSockets[game.players[idx].socketID];
@@ -185,6 +198,101 @@ describe("CoupGame — coin validation", () => {
     });
 
     expect(game.players[idx].money).toBe(10);
+  });
+
+  test("action from a player whose turn it is not gets rejected", () => {
+    const { game, playerSockets } = buildGameWithRealSM(["Alice", "Bob"]);
+
+    const otherIdx = (game.currentPlayer + 1) % 2;
+    const otherSock = playerSockets[game.players[otherIdx].socketID];
+    const beforeMoney = game.players[otherIdx].money;
+
+    otherSock._trigger("g-actionDecision", {
+      action: {
+        action: "income",
+        source: game.players[otherIdx].name,
+        target: null,
+      },
+    });
+
+    expect(game.players[otherIdx].money).toBe(beforeMoney);
+  });
+
+  test("assassinate costs 3 coins, paid at declaration", () => {
+    const { game, playerSockets } = buildGameWithRealSM(["Alice", "Bob"]);
+
+    const idx = game.currentPlayer;
+    const actingSock = playerSockets[game.players[idx].socketID];
+    const targetName = game.players[(idx + 1) % 2].name;
+    game.players[idx].money = 5;
+    game.players[idx].influences = ["assassin", "duke"];
+
+    actingSock._trigger("g-actionDecision", {
+      action: {
+        action: "assassinate",
+        source: game.players[idx].name,
+        target: targetName,
+      },
+    });
+
+    expect(game.players[idx].money).toBe(2);
+  });
+
+  test("coup costs 7 coins and forces target with 2 cards to choose", () => {
+    const { game, gameSocket, playerSockets } = buildGameWithRealSM([
+      "Alice",
+      "Bob",
+    ]);
+
+    const idx = game.currentPlayer;
+    const targetIdx = (idx + 1) % 2;
+    const actingSock = playerSockets[game.players[idx].socketID];
+    game.players[idx].money = 7;
+    game.players[targetIdx].influences = ["duke", "captain"];
+
+    actingSock._trigger("g-actionDecision", {
+      action: {
+        action: "coup",
+        source: game.players[idx].name,
+        target: game.players[targetIdx].name,
+      },
+    });
+
+    expect(game.players[idx].money).toBe(0);
+    expect(
+      gameSocket._toEmitted.filter(
+        (e) =>
+          e.event === "g-chooseInfluence" &&
+          e.to === game.players[targetIdx].socketID
+      ).length
+    ).toBeGreaterThan(0);
+  });
+
+  test("disproven assassin claim — the 3 coins stay lost", () => {
+    const { game, playerSockets } = buildGameWithRealSM(["Alice", "Bob"]);
+
+    game.currentPlayer = 0;
+    game.players[0].money = 3;
+    game.players[0].influences = ["duke", "captain"]; // no assassin — bluff
+    game.players[1].influences = ["duke", "contessa"];
+
+    const aliceSock = playerSockets["sock-0"];
+    const bobSock = playerSockets["sock-1"];
+
+    aliceSock._trigger("g-actionDecision", {
+      action: { action: "assassinate", source: "Alice", target: "Bob" },
+    });
+    expect(game.players[0].money).toBe(0); // paid up-front
+
+    bobSock._trigger("g-challengeDecision", {
+      action: { action: "assassinate", source: "Alice", target: "Bob" },
+      isChallenging: true,
+      challengee: "Alice",
+      challenger: "Bob",
+    });
+
+    // Bluff caught → assassination cancelled, but paid coins never return
+    expect(game.players[0].money).toBe(0);
   });
 });
 
@@ -350,12 +458,14 @@ describe("CoupGame — new terminate/challenge edge cases", () => {
   });
 
   test("failed challenge auto-loses single challenger influence and keeps non-claimed challengee card", () => {
-    const { game, playerSockets } = buildGame(["Alice", "Bob"]);
+    const { game, gameSocket, playerSockets } = buildGameWithRealSM([
+      "Alice",
+      "Bob",
+    ]);
     const aliceSock = playerSockets["sock-0"];
     const bobSock = playerSockets["sock-1"];
 
     game.currentPlayer = 0;
-    game.isTurnOpen = true;
     game.players[0].money = 3;
     game.players[0].influences = ["assassin", "duke"];
     game.players[1].influences = ["captain"]; // single influence => auto lose
@@ -376,18 +486,24 @@ describe("CoupGame — new terminate/challenge edge cases", () => {
     expect(game.players[1].revealedInfluences).toEqual(
       expect.arrayContaining(["captain"])
     );
-    expect(game.isChooseInfluenceOpen).toBe(false);
+    expect(
+      gameSocket._toEmitted.filter(
+        (e) => e.event === "g-chooseInfluence" && e.to === "sock-1"
+      )
+    ).toHaveLength(0);
     // Non-claimed card should remain (only challenged assassin should be replace candidate)
     expect(game.players[0].influences).toContain("duke");
   });
 
   test("successful challenge opens influence choice for challengee with two cards", () => {
-    const { game, playerSockets } = buildGame(["Alice", "Bob"]);
+    const { game, gameSocket, playerSockets } = buildGameWithRealSM([
+      "Alice",
+      "Bob",
+    ]);
     const aliceSock = playerSockets["sock-0"];
     const bobSock = playerSockets["sock-1"];
 
     game.currentPlayer = 0;
-    game.isTurnOpen = true;
     game.players[0].influences = ["captain", "assassin"]; // no duke for tax claim
     game.players[1].influences = ["duke", "captain"];
 
@@ -401,8 +517,36 @@ describe("CoupGame — new terminate/challenge edge cases", () => {
       challenger: "Bob",
     });
 
-    expect(game.isChooseInfluenceOpen).toBe(true);
-    expect(game.pendingInfluencePlayerIndex).toBe(0);
+    // Alice (the bluffer) must pick which influence to lose
+    expect(
+      gameSocket._toEmitted.filter(
+        (e) => e.event === "g-chooseInfluence" && e.to === "sock-0"
+      ).length
+    ).toBeGreaterThan(0);
+  });
+
+  test("play again re-deals cards, coins, and clears revealed influences", () => {
+    const { game, playerSockets } = buildGameWithRealSM(["Alice", "Bob"]);
+
+    // Simulate a finished game
+    game.players[0].influences = [];
+    game.players[0].revealedInfluences = ["duke", "captain"];
+    game.players[0].isDead = true;
+    game.players[0].money = 0;
+    game.players[1].influences = ["contessa"];
+    game.players[1].revealedInfluences = ["assassin"];
+    game.aliveCount = 1;
+    game.isPlayAgainOpen = true;
+
+    playerSockets["sock-0"]._trigger("g-playAgain");
+
+    game.players.forEach((p) => {
+      expect(p.influences).toHaveLength(2);
+      expect(p.revealedInfluences).toEqual([]);
+      expect(p.isDead).toBe(false);
+    });
+    expect(game.aliveCount).toBe(2);
+    expect(game.deck.length).toBe(15 - 4);
   });
 });
 

@@ -2,6 +2,35 @@ import React, { useState } from "react";
 import InfluenceCard from "../shared/InfluenceCard";
 import { CARD_IMAGES } from "../../assets/cards";
 
+// Compact revealed card — same visual language as the opponents' mini cards
+function RevealedCardMini({ name }) {
+  const key = name?.toLowerCase();
+  const image = key ? CARD_IMAGES[key] : null;
+
+  return (
+    <div className="flex flex-col items-center gap-1" title={key}>
+      <div className="w-14 h-20 border border-error/40 overflow-hidden bg-surface-container-highest opacity-60 saturate-50 relative">
+        {image ? (
+          <img
+            src={image}
+            alt={key}
+            className="w-full h-full object-cover object-top"
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            <span className="font-headline text-2xl text-outline/30 select-none">
+              {key?.[0]?.toUpperCase()}
+            </span>
+          </div>
+        )}
+      </div>
+      <span className="font-label text-[8px] tracking-widest uppercase text-error/70">
+        {key}
+      </span>
+    </div>
+  );
+}
+
 export default function PlayerHand({
   influences = [],
   revealedInfluences = [],
@@ -24,8 +53,14 @@ export default function PlayerHand({
     });
   };
 
+  const statusText = isDead
+    ? "OUT OF GAME"
+    : influences.length === 1
+      ? "1 CARD LEFT"
+      : null;
+
   return (
-    <div className="absolute bottom-28 inset-x-0 flex justify-center pointer-events-auto">
+    <div className="absolute bottom-28 inset-x-0 flex justify-center pointer-events-auto z-10">
       <div className="flex flex-row items-end gap-6">
         {influences.map((influence, index) => {
           const isFlipped = flipped.has(index);
@@ -53,20 +88,26 @@ export default function PlayerHand({
             </div>
           );
         })}
-        {revealedInfluences.map((influence, index) => {
-          const key = influence.toLowerCase();
-          return (
-            <InfluenceCard
-              key={`revealed-${index}-${influence}`}
-              name={key}
-              image={CARD_IMAGES[key] ?? null}
-              size="lg"
-              isRevealed={true}
-              revealedLabel={isDead ? "OUT OF GAME" : "DEAD CARD"}
-              footerLabel="REVEALED"
-            />
-          );
-        })}
+        {revealedInfluences.length > 0 && (
+          <div
+            data-testid="own-revealed-area"
+            className="flex flex-col items-center gap-2 pb-1"
+          >
+            {statusText && (
+              <span className="font-label text-[9px] tracking-[0.3em] uppercase text-error/80 whitespace-nowrap">
+                {statusText}
+              </span>
+            )}
+            <div className="flex gap-2">
+              {revealedInfluences.map((influence, index) => (
+                <RevealedCardMini
+                  key={`revealed-${index}-${influence}`}
+                  name={influence}
+                />
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

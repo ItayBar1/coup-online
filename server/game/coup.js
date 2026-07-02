@@ -48,6 +48,7 @@ class CoupGame {
     for (let i = 0; i < this.players.length; i++) {
       this.players[i].money = 2;
       this.players[i].influences = [this.deck.pop(), this.deck.pop()];
+      this.players[i].revealedInfluences = [];
       this.players[i].isDead = false;
       this.players[i].missedTurns = 0;
     }
@@ -72,7 +73,9 @@ class CoupGame {
       socket.on("g-playAgain", () => {
         if (this.isPlayAgainOpen) {
           this.isPlayAgainOpen = false;
-          this.sm.dispatch(EVENTS.PLAY_AGAIN);
+          // Full re-deal: fresh deck, 2 cards + 2 coins per player.
+          // resetGame transitions to IDLE, which advances into the first turn.
+          this.resetGame(this.currentPlayer);
         }
       });
 
@@ -81,13 +84,53 @@ class CoupGame {
           "g-actionDecision",
           `source=${res.action?.source} action=${res.action?.action} target=${res.action?.target}`
         );
-        const actionDef = this.actions[res.action?.action];
-        const isChallengeable = actionDef?.isChallengeable ?? false;
-        const isBlockable = (actionDef?.blockableBy?.length ?? 0) > 0;
+        const action = res.action;
+        const actionDef = action ? this.actions[action.action] : null;
+        if (!action || !actionDef) return;
+        if (!this.sm.in(PHASES.ACTION_PENDING)) return;
+
+        const player = this._findPlayer(action.source);
+        if (!player || player.isDead) return;
+        if (this.players[this.currentPlayer].name !== action.source) return;
+
+        const cost = actionDef.moneyDelta < 0 ? -actionDef.moneyDelta : 0;
+        const needsTarget = ["coup", "assassinate", "steal"].includes(
+          action.action
+        );
+        const targetPlayer = action.target
+          ? this._findPlayer(action.target)
+          : null;
+
+        const invalid =
+          player.money < cost ||
+          (player.money >= 10 && action.action !== "coup") ||
+          (needsTarget &&
+            (!targetPlayer || targetPlayer.isDead || targetPlayer === player));
+
+        if (invalid) {
+          log(
+            "g-actionDecision",
+            `rejected invalid action "${action.action}" from ${action.source}`
+          );
+          // Re-open the action prompt so the player isn't stuck
+          this.gameSocket.to(player.socketID).emit("g-chooseAction");
+          return;
+        }
+
+        player.missedTurns = 0;
+
+        // Costs are paid up-front when the action is declared and are
+        // never refunded — even if the action is blocked or the claim
+        // is successfully challenged.
+        if (cost > 0) {
+          player.money -= cost;
+          this.updatePlayers();
+        }
+
         this.sm.dispatch(EVENTS.ACTION_CHOSEN, {
-          action: res.action,
-          isChallengeable,
-          isBlockable,
+          action,
+          isChallengeable: actionDef.isChallengeable,
+          isBlockable: actionDef.blockableBy.length > 0,
         });
       });
 
@@ -96,12 +139,9 @@ class CoupGame {
           "g-challengeDecision",
           `challenger=${res.challenger} challengee=${res.challengee} isChallenging=${res.isChallenging}`
         );
-        if (!this.sm.in(PHASES.CHALLENGE_OPEN)) {
-          if (res.isChallenging) {
-            this._resolveChallengeDirect(res);
-          }
-          return;
-        }
+        // Ignore votes that arrive after the challenge window closed
+        // (e.g. two players challenging at nearly the same time).
+        if (!this.sm.in(PHASES.CHALLENGE_OPEN)) return;
         if (res.isChallenging) {
           this._autoResolveChallenge(res, false);
           return;
@@ -132,7 +172,26 @@ class CoupGame {
             this.gameSocket.emit("g-gameOver", winner.name);
             this.sm.transition(PHASES.GAME_OVER, { winner: winner.name });
           }
-        } else if (playerIdx === this.currentPlayer) {
+          return;
+        }
+
+        const ctx = this.sm.getContext();
+        if (playerIdx === this.currentPlayer) {
+          this.sm.transition(PHASES.IDLE, {});
+        } else if (
+          this.sm.in(PHASES.CHOOSE_INFLUENCE_PENDING) &&
+          ctx.playerName === res.playerName
+        ) {
+          // The player who had to pick a card to lose left — their cards are
+          // already revealed; continue with the pending action if any.
+          this.sm.transition(
+            PHASES.IDLE,
+            ctx.pendingAction ? { pendingAction: ctx.pendingAction } : {}
+          );
+        } else if (
+          this.sm.in(PHASES.REVEAL_PENDING) &&
+          ctx.challengee === res.playerName
+        ) {
           this.sm.transition(PHASES.IDLE, {});
         }
       });
@@ -418,11 +477,14 @@ class CoupGame {
         t.revealedInfluences.push(t.influences[0]);
         t.influences = [];
         this.nextTurn();
-      } else {
+      } else if (t.influences.length > 1) {
         this.sm.transition(PHASES.CHOOSE_INFLUENCE_PENDING, {
           playerName: target,
           pendingAction: null,
         });
+      } else {
+        // target already dead — skip influence loss
+        this.nextTurn();
       }
     } else if (execute === "assassinate") {
       const t = this._findPlayer(target);
@@ -546,6 +608,7 @@ class CoupGame {
       "g-updatePlayers",
       gameUtils.exportPlayers(JSON.parse(JSON.stringify(this.players)))
     );
+    this.gameSocket.emit("g-updateDeckCount", this.deck.length);
   }
 
   _findPlayer(name) {
@@ -570,55 +633,11 @@ class CoupGame {
       }
     }
 
-    // BUG-02: refund coins if assassination challenge succeeded
-    if (ctx.refundAssassinate) {
-      this._findPlayer(ctx.challengee).money += 3;
-    }
-
-    // BUG-03: if there's a pending action waiting, apply it now
+    // if there's a pending action waiting, apply it now
     if (ctx.pendingAction) {
       this.applyAction(ctx.pendingAction);
     } else {
       this.nextTurn();
-    }
-  }
-
-  // Direct challenge resolution used when state machine is not active (e.g. tests).
-  // In normal play the sm handles CHALLENGE_OPEN → this path is never reached.
-  _resolveChallengeDirect(res) {
-    const claimedCard = this.actions[res.action?.action]?.influence;
-    if (!claimedCard || claimedCard === "all") return;
-
-    const challengeeIdx = this.nameIndexMap[res.challengee];
-    const challengerIdx = this.nameIndexMap[res.challenger];
-    const challengee = this.players[challengeeIdx];
-    const challenger = this.players[challengerIdx];
-    if (!challengee || !challenger) return;
-
-    const challengeeHasCard = challengee.influences.includes(claimedCard);
-
-    if (challengeeHasCard) {
-      // Failed challenge — challenger loses an influence
-      if (challenger.influences.length === 1) {
-        const card = challenger.influences[0];
-        challenger.revealedInfluences.push(card);
-        challenger.influences = [];
-        this.isChooseInfluenceOpen = false;
-      } else {
-        this.isChooseInfluenceOpen = true;
-        this.pendingInfluencePlayerIndex = challengerIdx;
-      }
-    } else {
-      // Successful challenge — challengee loses an influence
-      if (challengee.influences.length === 1) {
-        const card = challengee.influences[0];
-        challengee.revealedInfluences.push(card);
-        challengee.influences = [];
-        this.isChooseInfluenceOpen = false;
-      } else {
-        this.isChooseInfluenceOpen = true;
-        this.pendingInfluencePlayerIndex = challengeeIdx;
-      }
     }
   }
 
