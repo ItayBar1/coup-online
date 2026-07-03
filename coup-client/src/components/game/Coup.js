@@ -131,8 +131,7 @@ export default class Coup extends Component {
         }
         return <>{item + " "}</>;
       });
-      bind.state.logs = [...bind.state.logs, coloredLog];
-      bind.setState({ logs: bind.state.logs });
+      bind.setState((prev) => ({ logs: [...prev.logs, coloredLog] }));
     });
     this.props.socket.on("g-chooseAction", () => {
       logger.info("My turn — choose action");

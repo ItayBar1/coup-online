@@ -8,11 +8,11 @@ export default function CharactersPage() {
     <div className="dark min-h-screen bg-surface text-on-background font-body">
       <div className="grain-overlay fixed inset-0 z-0 pointer-events-none"></div>
 
-      <header className="bg-[#1a1208]/90 backdrop-blur-xl border-b border-[#a88a86]/10 fixed top-0 w-full z-50 flex justify-between items-center px-8 py-4">
-        <div className="text-xl font-bold tracking-[0.2em] text-[#f5edd8] font-headline uppercase">
+      <header className="bg-[#1a1208]/90 backdrop-blur-xl border-b border-[#a88a86]/10 fixed top-0 w-full z-50 flex justify-between items-center px-4 sm:px-8 py-4">
+        <div className="text-base sm:text-xl font-bold tracking-[0.1em] sm:tracking-[0.2em] text-[#f5edd8] font-headline uppercase">
           THE SOVEREIGN LEDGER
         </div>
-        <nav className="flex items-center gap-6 font-serif-accent tracking-tighter uppercase text-sm">
+        <nav className="flex items-center gap-3 sm:gap-6 font-serif-accent tracking-tighter uppercase text-xs sm:text-sm">
           <Link
             to="/"
             className="text-[#a88a86] hover:text-[#ffb4ac] transition-colors"

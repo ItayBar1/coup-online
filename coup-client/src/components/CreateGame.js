@@ -193,8 +193,8 @@ export default class CreateGame extends Component {
         <LandingBackground dimmed={true} />
 
         {/* Header */}
-        <header className="bg-[#1a1208]/90 backdrop-blur-xl border-b border-[#a88a86]/10 fixed top-0 w-full z-50 flex justify-between items-center px-8 py-4">
-          <div className="text-xl font-bold tracking-[0.2em] text-[#f5edd8] font-headline uppercase">
+        <header className="bg-[#1a1208]/90 backdrop-blur-xl border-b border-[#a88a86]/10 fixed top-0 w-full z-50 flex justify-between items-center px-4 sm:px-8 py-4">
+          <div className="text-base sm:text-xl font-bold tracking-[0.1em] sm:tracking-[0.2em] text-[#f5edd8] font-headline uppercase">
             THE SOVEREIGN LEDGER
           </div>
           <Link
@@ -206,7 +206,7 @@ export default class CreateGame extends Component {
         </header>
 
         {/* Modal Panel */}
-        <div className="relative z-40 flex-grow flex items-center justify-center pt-24 pb-8 px-4">
+        <div className="relative z-40 flex-grow flex items-start sm:items-center justify-center pt-24 pb-8 px-4">
           <div className="w-full max-w-md bg-surface-container/80 backdrop-blur-xl border border-outline-variant p-8 space-y-6">
             {/* Title */}
             <div className="flex items-center gap-3">

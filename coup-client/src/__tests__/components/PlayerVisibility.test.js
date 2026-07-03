@@ -34,8 +34,8 @@ describe("Player visibility states", () => {
     expect(screen.getAllByAltText("assassin")).toHaveLength(1);
   });
 
-  it("PlayerHand shows revealed cards as DEAD CARD when player still alive", () => {
-    render(
+  it("PlayerHand shows compact revealed card and '1 CARD LEFT' when player still alive", () => {
+    const { container } = render(
       <PlayerHand
         influences={["duke"]}
         revealedInfluences={["captain"]}
@@ -43,8 +43,11 @@ describe("Player visibility states", () => {
       />
     );
 
-    expect(screen.getByText("DEAD CARD")).toBeInTheDocument();
-    expect(screen.getByText("REVEALED")).toBeInTheDocument();
+    expect(screen.getByText("1 CARD LEFT")).toBeInTheDocument();
+    expect(
+      container.querySelector('[data-testid="own-revealed-area"]')
+    ).not.toBeNull();
+    expect(screen.getByAltText("captain")).toBeInTheDocument();
   });
 
   it("PlayerHand shows revealed cards as OUT OF GAME when player eliminated", () => {
@@ -57,6 +60,6 @@ describe("Player visibility states", () => {
     );
 
     expect(screen.getByText("OUT OF GAME")).toBeInTheDocument();
-    expect(screen.getByText("REVEALED")).toBeInTheDocument();
+    expect(screen.getByAltText("assassin")).toBeInTheDocument();
   });
 });
